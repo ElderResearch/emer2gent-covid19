@@ -37,14 +37,15 @@ by the Census Bureau.
 
 import logging
 import os
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
 import census
 import pandas as pd
 
 __all__ = [
-    "check_api_key",
-    "get_dem_agegender",
+    "check_for_api_key",
+    "get_dem_age_gender",
+    "get_dem_median_income",
     "get_dem_pop",
     "get_dem_race",
     "get_fields_per_county",
@@ -75,16 +76,16 @@ logger = logging.getLogger(__name__)
 # Private functions ------------------------------------------------------------
 
 
-def _init_api() -> None:
+def _init_api(key: Optional[str] = None) -> None:
     """Utility function for working in notebooks."""
-    _get_api_client()
+    _get_api_client(key=key)
 
 
 def _get_api_key() -> str:
     """Fetch the API key from the environment."""
     logger.info("Getting API key")
 
-    check_api_key()
+    check_for_api_key()
     return os.environ[_API_KEY_NAME]
 
 
@@ -117,14 +118,55 @@ def _get_api_client(key: Optional[str] = None) -> census.core.ACSClient:
     return API_SESSION
 
 
-def _get_fields_for_table(tbl: str) -> List[str]:
+def _get_fields_for_table(tbl: str, api_key: Optional[str] = None) -> List[str]:
+    # Populate API_FIELDS and init the session
+    if not _API_FIELDS:
+        _init_api(key=api_key)
     return sorted(k for k in _API_FIELDS if _API_FIELDS[k]["group"] == tbl)
+
+
+def _translate_state_county_result(
+    result: List[Dict],
+    map_dict: Optional[Dict[str, str]] = None,
+    map_fn: Optional[Callable[[Dict], Dict]] = None,
+) -> List[Dict]:
+    """Map an API result (list[dict]) to an aggregated/better named version."""
+
+    # Check that we have reasonable parameters (only one mapper specified)
+    if (map_dict is not None) == (map_fn is not None):
+        raise ValueError("one of map_dict and map_fn must be given")
+
+    output: List[Dict] = []
+
+    # Simple, dict-based mapper
+    if map_dict is not None:
+        logger.info("Translating result using map_dict")
+
+        for d in result:
+            entry = {"state_fips": d["state"], "county_fips": d["county"]}
+            for old, new in map_dict.items():
+                entry[new] = d[old]
+            output.append(entry)
+        return output
+
+    # Functional wrapper
+    if map_fn is not None:
+        logger.info("Translating result using map_fn")
+
+        for d in result:
+            entry = {"state_fips": d["state"], "county_fips": d["county"]}
+            for k, v in map_fn(d).items():
+                entry[k] = v
+            output.append(entry)
+        return output
+
+    raise ValueError("unexpected function exit; neither map_dict nor map_fn were used")
 
 
 # Public functions -------------------------------------------------------------
 
 
-def check_api_key() -> None:
+def check_for_api_key() -> None:
     """Check for the existence of a Census API key in system variables."""
     if _API_KEY_NAME not in os.environ:
         raise KeyError(f"{_API_KEY_NAME} not found on the environment")
@@ -232,12 +274,14 @@ def get_table_per_county(
     """
     logger.info("Gathering table per county")
 
-    fields = _get_fields_for_table(table)
-    return get_fields_per_county(fields, state_fips=state_fips, county_fips=county_fips)
+    fields = _get_fields_for_table(table, api_key=api_key)
+    return get_fields_per_county(
+        fields, state_fips=state_fips, county_fips=county_fips, api_key=api_key
+    )
 
 
 def get_dem_pop(api_key: Optional[str] = None,) -> List[Dict]:
-    """Collect a cleanly-named list of dicts suited to pandas.
+    """Collect per-county population.
 
     Args:
         api_key (optional str): API key
@@ -247,23 +291,31 @@ def get_dem_pop(api_key: Optional[str] = None,) -> List[Dict]:
             'state_fips' and 'county_fips'
     """
     result = get_fields_per_county(["B01003_001E"], api_key=api_key)
+    return _translate_state_county_result(
+        result, map_dict={"B01003_001E": "acs_pop_total"}
+    )
+
+
+def get_dem_median_income(api_key: Optional[str] = None,) -> List[Dict]:
+    """Collect per-capita median income by county.
+
+    Args:
+        api_key (optional str): API key
+
+    Returns:
+        (list[dict]) rows of a data frame, keys are
+            'state_fips' and 'county_fips'
+    """
+    result = get_fields_per_county(["B19301_001E"], api_key=api_key)
 
     # Rewrite column names
-    output: List[Dict] = []
-    for r in result:
-        output.append(
-            {
-                "state_fips": r["state"],
-                "county_fips": r["county"],
-                "acs_pop_total": r["B01003_001E"],
-            }
-        )
-
-    return output
+    return _translate_state_county_result(
+        result, map_dict={"B19301_001E": "acs_income_median"}
+    )
 
 
 def get_dem_race(api_key: Optional[str] = None,) -> List[Dict]:
-    """Collect a cleanly-named list of dicts suited to pandas.
+    """Collect a racial demographics by county.
 
     Args:
         api_key (optional str): API key
@@ -284,21 +336,13 @@ def get_dem_race(api_key: Optional[str] = None,) -> List[Dict]:
         "B02001_009E": "acs_race_two_or_more_incl_other",
         "B02001_010E": "acs_race_two_or_more_excl_other_three_or_more",
     }
+
     output = get_table_per_county("B02001", api_key=api_key)
-
-    # Rewrite column names
-    result: List[Dict] = []
-    for d in output:
-        entry = {"staate_fips": d["state"], "county_fips": d["county"]}
-        for old, new in FIELDS_MAP.items():
-            entry[new] = d[old]
-        result.append(entry)
-
-    return result
+    return _translate_state_county_result(output, map_dict=FIELDS_MAP)
 
 
-def get_dem_agegender(api_key: Optional[str] = None,) -> List[Dict]:
-    """Collect a cleanly-named list of dicts suited to pandas.
+def get_dem_age_gender(api_key: Optional[str] = None,) -> List[Dict]:
+    """Collect age & gender demographics by county.
 
     Args:
         api_key (optional str): API key
@@ -309,8 +353,8 @@ def get_dem_agegender(api_key: Optional[str] = None,) -> List[Dict]:
     """
 
     def _mapper(d: Dict) -> Dict:
-        # Initialize with state and county
-        o = {f"{k}_fips": d[k] for k in ("state", "county")}
+        """Custom mapper to aggregate per-gender age brackets."""
+        o = {}
         # Add in the total gender populations
         o["acs_gender_total"] = d["B01001_001E"]
         o["acs_gender_male"] = d["B01001_002E"]
@@ -342,6 +386,4 @@ def get_dem_agegender(api_key: Optional[str] = None,) -> List[Dict]:
         return o
 
     table = get_table_per_county("B01001", api_key=api_key)
-    logger.info("Running mapper")
-    # Rewrite column names and do calculations
-    return [_mapper(d) for d in table]
+    return _translate_state_county_result(table, map_fn=_mapper)
