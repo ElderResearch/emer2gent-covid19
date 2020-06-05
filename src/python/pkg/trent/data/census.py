@@ -44,14 +44,13 @@ import pandas as pd
 
 __all__ = [
     "check_api_key",
-    "get_fields_per_county",
-    "list_fields",
-    "list_tables",
-    "get_fields_per_county",
-    "get_table_per_county",
+    "get_dem_agegender",
     "get_dem_pop",
     "get_dem_race",
-    "get_dem_agegender",
+    "get_fields_per_county",
+    "get_table_per_county",
+    "list_fields",
+    "list_tables",
 ]
 
 
