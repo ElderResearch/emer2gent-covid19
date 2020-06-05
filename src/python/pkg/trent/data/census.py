@@ -42,24 +42,35 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 import census
 import pandas as pd
 
-__all__ = ["check_api_key", "get_fields_per_county"]
+__all__ = [
+    "check_api_key",
+    "get_fields_per_county",
+    "list_fields",
+    "list_tables",
+    "get_fields_per_county",
+    "get_table_per_county",
+    "get_dem_pop",
+    "get_dem_race",
+    "get_dem_agegender",
+]
 
 
 _API_KEY_NAME = "CENSUS_API_KEY"
 
+# Tracks the session over time
 API_SESSION: Optional[census.core.ACSClient] = None
 
+# Changing these module constants would change the underlying source
 API_DATASET = "acs5"
 API_YEAR = 2018
 
-# This is a big hack: we load the tables and fields on first run b/c
-# they have weird non-local effects with one another later.
+# This is a big hack: we load an cache the tables and fields on first run
+# b/c they have weird non-local effects with one another later.
 _API_TABLES: Dict[str, Dict] = {}
 _API_FIELDS: Dict[str, Dict] = {}
 
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 # Private functions ------------------------------------------------------------
