@@ -130,7 +130,21 @@ def _translate_state_county_result(
     map_dict: Optional[Dict[str, str]] = None,
     map_fn: Optional[Callable[[Dict], Dict]] = None,
 ) -> List[Dict]:
-    """Map an API result (list[dict]) to an aggregated/better named version."""
+    """Map an API result (list[dict]) to an aggregated/better named version.
+
+    Args:
+        result (list[dict]): the API output, including *at least*
+            "state" and "county"
+        map_dict (dict[str, str]): a mapper from Census fields to usable
+            column names
+        map_fn (callable, dict->dict): a mapping *function* from a Census
+            results dict to some other arbitrary dict (e.g., for column ops)
+
+    Returns:
+        (list[dict]) a transformed version of the input list
+
+    NOTE: One and only one of `map_dict` and `map_fn` should be specified.
+    """
 
     # Check that we have reasonable parameters (only one mapper specified)
     if (map_dict is not None) == (map_fn is not None):
