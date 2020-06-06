@@ -13,12 +13,13 @@ easy to go back and text by changing _API_DATASET.
 
 ACS tables:
 
-| What   | Table  | Fields      | Notes     |
-| ---    | ---    | ---         | ---       |
-| Pop.   | B01003 | B01003_001E | No errors |
-| Age    | B01001 | *           | Calculate marginals from these |
-| Gender | B01001 | *           | Calculate marginals from these |
-| Race   | B02001 | *           | cf. C02003 for more categories |
+| What             | Table        | Fields | Notes                               |
+| ---              | ---          | ---    | ---                                 |
+| Pop.             | B01003       | 001E   | No errors reported for any measures |
+| Age              | B01001       | *      | Calculate marginals from these      |
+| Gender           | B01001       | *      | Calculate marginals from these      |
+| Race             | B02001       | *      | Cf. C02003 for more categories      |
+| Median HH income | B19013[,A-I] | 001E   | Median HH instead of per-capita     |
 
 
 Output table format:
@@ -37,6 +38,7 @@ by the Census Bureau.
 
 import logging
 import os
+from collections import defaultdict
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
 import census
@@ -45,7 +47,7 @@ import pandas as pd
 __all__ = [
     "check_for_api_key",
     "get_dem_age_gender",
-    "get_dem_median_income",
+    "get_dem_median_hh_income",
     "get_dem_pop",
     "get_dem_race",
     "get_fields_per_county",
@@ -119,7 +121,7 @@ def _get_api_client(key: Optional[str] = None) -> census.core.ACSClient:
 
 
 def _get_fields_for_table(tbl: str, api_key: Optional[str] = None) -> List[str]:
-    # Populate API_FIELDS and init the session
+    """Collect all fields associated with a Census table."""
     if not _API_FIELDS:
         _init_api(key=api_key)
     return sorted(k for k in _API_FIELDS if _API_FIELDS[k]["group"] == tbl)
@@ -175,6 +177,41 @@ def _translate_state_county_result(
         return output
 
     raise ValueError("unexpected function exit; neither map_dict nor map_fn were used")
+
+
+def _mark_missings_as_na(
+    result: List[Dict], exclude_cols: Iterable[str] = ()
+) -> List[Dict]:
+    """Selectively mark Census results < 0 or None as NA.
+
+    Census items (e.g., median HH income) seem to return large
+    negative values when the data is not available. Sometimes we also
+    get None.
+
+    This should be called _before_ any mapping!
+
+    Args:
+        result (list[dict]): the Census API output
+        exclude_cols (iterable): columns to exclude from this task
+
+    Returns:
+        (list[dict])  a transformed version of the input
+    """
+    cols_to_exclude = {"state", "county"}.union(exclude_cols)
+    # Count the values we changed
+    missing_counts: Dict[Any, int] = defaultdict(lambda: 0)
+    output = []
+    for entry in result:
+        for field in set(entry).difference(cols_to_exclude):
+            if entry[field] is None or entry[field] < 0:
+                missing_counts[entry[field]] += 1
+                entry[field] = pd.NA
+        output.append(entry)
+
+    for k in missing_counts:
+        logger.info(f"Marked {missing_counts[k]} {k} results as NA")
+
+    return output
 
 
 # Public functions -------------------------------------------------------------
@@ -305,27 +342,11 @@ def get_dem_pop(api_key: Optional[str] = None,) -> List[Dict]:
             'state_fips' and 'county_fips'
     """
     result = get_fields_per_county(["B01003_001E"], api_key=api_key)
-    return _translate_state_county_result(
+    result = _mark_missings_as_na(result)
+    result = _translate_state_county_result(
         result, map_dict={"B01003_001E": "acs_pop_total"}
     )
-
-
-def get_dem_median_income(api_key: Optional[str] = None,) -> List[Dict]:
-    """Collect per-capita median income by county.
-
-    Args:
-        api_key (optional str): API key
-
-    Returns:
-        (list[dict]) rows of a data frame, keys are
-            'state_fips' and 'county_fips'
-    """
-    result = get_fields_per_county(["B19301_001E"], api_key=api_key)
-
-    # Rewrite column names
-    return _translate_state_county_result(
-        result, map_dict={"B19301_001E": "acs_income_median"}
-    )
+    return result
 
 
 def get_dem_race(api_key: Optional[str] = None,) -> List[Dict]:
@@ -342,7 +363,7 @@ def get_dem_race(api_key: Optional[str] = None,) -> List[Dict]:
         "B02001_001E": "acs_race_total",
         "B02001_002E": "acs_race_white",
         "B02001_003E": "acs_race_black",
-        "B02001_004E": "acs_race_amind",
+        "B02001_004E": "acs_race_am_ind",
         "B02001_005E": "acs_race_asian",
         "B02001_006E": "acs_race_hawaiian",
         "B02001_007E": "acs_race_other_single",
@@ -352,7 +373,9 @@ def get_dem_race(api_key: Optional[str] = None,) -> List[Dict]:
     }
 
     output = get_table_per_county("B02001", api_key=api_key)
-    return _translate_state_county_result(output, map_dict=FIELDS_MAP)
+    output = _mark_missings_as_na(output)
+    result = _translate_state_county_result(output, map_dict=FIELDS_MAP)
+    return result
 
 
 def get_dem_age_gender(api_key: Optional[str] = None,) -> List[Dict]:
@@ -400,4 +423,49 @@ def get_dem_age_gender(api_key: Optional[str] = None,) -> List[Dict]:
         return o
 
     table = get_table_per_county("B01001", api_key=api_key)
-    return _translate_state_county_result(table, map_fn=_mapper)
+    result = _mark_missings_as_na(table)
+    result = _translate_state_county_result(result, map_fn=_mapper)
+    return result
+
+
+def get_dem_median_hh_income(api_key: Optional[str] = None,) -> List[Dict]:
+    """Collect median household income by county.
+
+    This data is spread across multiple tables, as we might want to
+    collect per-demographic numbers.
+
+    B19013	median HH income, last 12 mos (2018 inflation-adjusted $)
+    B19013A	median HH income, "", white alone householder
+    B19013B	median HH income, "", black or african american alone ""
+    B19013C	median HH income, "", american indian and alaska native alone ""
+    B19013D	median HH income, "", asian alone ""
+    B19013E	median HH income, "", native hawaiian and other pacific islander alone ""
+    B19013F	median HH income, "", some other race alone ""
+    B19013G	median HH income, "", two or more races ""
+    B19013H	median HH income, "", white alone, not hispanic or latino ""
+    B19013I	median HH income, "", hispanic or latino ""
+
+    Args:
+        api_key (optional str): API key
+
+    Returns:
+        (list[dict]) rows of a data frame, keys are
+            'state_fips' and 'county_fips'
+    """
+    FIELDS = {
+        "B19013_001E": "acs_median_hh_inc_total",
+        "B19013A_001E": "acs_median_hh_inc_white",
+        "B19013B_001E": "acs_median_hh_inc_black",
+        "B19013C_001E": "acs_median_hh_inc_am_ind",
+        "B19013D_001E": "acs_median_hh_inc_asian",
+        "B19013E_001E": "acs_median_hh_inc_hawaiian",
+        "B19013F_001E": "acs_median_hh_inc_other_single",
+        "B19013G_001E": "acs_median_hh_inc_two_or_more_races",
+        "B19013H_001E": "acs_median_hh_inc_white_non_hispanic",
+        "B19013I_001E": "acs_median_hh_inc_hispanic",
+    }
+    result = get_fields_per_county(list(FIELDS.keys()), api_key=api_key)
+    result = _mark_missings_as_na(result)
+    result = _translate_state_county_result(result, map_dict=FIELDS)
+
+    return result
