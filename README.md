@@ -7,3 +7,11 @@ Since the outbreak of COVID-19 in the UK, several significant measures have been
 Due to its political system, the response to the COVID outbreak in the US has been different from state-to-state. As such, the US provides a wide variety of types, timing and (non-)application of measures. A state-by-state analysis of the impact of enforcing and releasing measures on health and economic outcomes could therefore provide helpful insights to inform planning the release of measures in the UK.
 
 In this Challenge, we are seeking US state data-backed suggestionsfor release of measures in the UK that allow economic activity to resume whilst minimising the risk of additional COVID-19 deaths.
+
+## Project Setup
+
+1. Create and activate a python virtual environment using the included requirements file
+2. run the project init script to download the necessary data sources from S3
+   ```sh
+   $ python src/python/init_project.py
+   ```
