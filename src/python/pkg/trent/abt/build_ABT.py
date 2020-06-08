@@ -77,6 +77,7 @@ def join_all_data():
                         )
     ABT_V2.drop(ABT_V2.filter(regex='_dropMe$').columns.tolist(),axis=1, inplace=True)
     print(f"ABT_V2.shape ={ABT_V2.shape}")
+    
     # -------------------------------------------------------------------------------
     # STEP 4: Add Census data
     # Census data is using state_fips as the prefix to the full fips AND county fips the suffix 
@@ -85,7 +86,7 @@ def join_all_data():
     ABT_V2["state_code"] = fips_id.apply(parse_state).apply(int)
     ABT_V2["proxy_fip"] = fips_id.apply(parse_county).apply(int)
     # JOIN  using common keys: 
-    ABT_V3 = pd.merge(ABT_V2 ,ASC_full_df, 
+    ABT_V3 = pd.merge(ABT_V2 ,ACS_full_df, 
                       how = "left" , 
                       left_on = ["state_code","proxy_fip"] , 
                       right_on = ["state_fips","county_fips"],
@@ -143,8 +144,8 @@ if  __name__ == "__main__":
     weather_df = pd.read_csv(f"{data_directory}/{file_name}", compression='gzip', error_bad_lines = False)
 
     # Census data created by join_census_data.py
-    file_name = "ASC_full.csv"
-    ASC_full_df = pd.read_csv(f"{intermediate_directory}/{file_name}")
+    file_name = "ACS_full.csv"
+    ACS_full_df = pd.read_csv(f"{intermediate_directory}/{file_name}")
 
     # Get ABT 
     ABT_final = join_all_data()

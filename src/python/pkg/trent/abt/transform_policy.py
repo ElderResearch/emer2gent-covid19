@@ -34,8 +34,6 @@ Binary features indicating if policy was in place at time stamp. Note if None Is
 - phase_2
 - phase_3
 
-Confluence page for description of this data 
-
 Assumtion: 
 A county that data was not specificly collected for inherentes the state level data 
 """

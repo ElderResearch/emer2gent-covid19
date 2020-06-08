@@ -38,28 +38,28 @@ if  __name__ == "__main__":
     
     # Polulation Data 
     file_name = "acs_dem_pop.csv.gz"
-    ASC_pop_df = pd.read_csv(f"{data_directory}/{file_name}", compression='gzip', error_bad_lines=False)
-    print(f"ASC_pop_df .shape ={ASC_pop_df.shape}")
+    ACS_pop_df = pd.read_csv(f"{data_directory}/{file_name}", compression='gzip', error_bad_lines=False)
+    print(f"ASC_pop_df .shape ={ACS_pop_df.shape}")
 
     # Race Data 
     file_name = "acs_dem_race.csv.gz"
-    ASC_race_df = pd.read_csv(f"{data_directory}/{file_name}", compression='gzip', error_bad_lines=False)
-    print(f"ASC_race_df .shape ={ASC_pop_df.shape}")
+    ACS_race_df = pd.read_csv(f"{data_directory}/{file_name}", compression='gzip', error_bad_lines=False)
+    print(f"ASC_race_df .shape ={ACS_pop_df.shape}")
 
     # Income Data 
     file_name = "acs_dem_median_hh_income.csv.gz"
-    ASC_income_df = pd.read_csv(f"{data_directory}/{file_name}", compression='gzip', error_bad_lines=False)
-    print(f"ASC_income_df .shape ={ASC_pop_df.shape}")
+    ACS_income_df = pd.read_csv(f"{data_directory}/{file_name}", compression='gzip', error_bad_lines=False)
+    print(f"ASC_income_df .shape ={ACS_pop_df.shape}")
 
     # Age, Demog. Gender 
     file_name = "acs_dem_age_gender.csv.gz"
-    ASC_DAG_df = pd.read_csv(f"{data_directory}/{file_name}", compression='gzip', error_bad_lines=False)
-    print(f"ASC_DAG_df .shape ={ASC_DAG_df.shape}")
+    ACS_DAG_df = pd.read_csv(f"{data_directory}/{file_name}", compression='gzip', error_bad_lines=False)
+    print(f"ASC_DAG_df .shape ={ACS_DAG_df.shape}")
 
     # Join data in a sequetial manner:
-    ASC_0 = join_asc_pair(DF_1=ASC_pop_df,DF_2=ASC_race_df) # POP & RACE 
-    ASC_1 = join_asc_pair(DF_1=ASC_0,DF_2=ASC_income_df)
-    ASC_2 = join_asc_pair(DF_1=ASC_1,DF_2=ASC_DAG_df)
+    ACS_0 = join_asc_pair(DF_1=ACS_pop_df,DF_2=ACS_race_df) # POP & RACE 
+    ACS_1 = join_asc_pair(DF_1=ACS_0,DF_2=ACS_income_df)
+    ACS_2 = join_asc_pair(DF_1=ACS_1,DF_2=ACS_DAG_df)
 
 
      # Export Data 
@@ -68,8 +68,8 @@ if  __name__ == "__main__":
         os.makedirs(check_directory)
 
     # Export CDC_full_df to csv 
-    file_name = "ASC_full.csv"
-    ASC_2.to_csv(f"{check_directory}/{file_name}",index = False)
+    file_name = "ACS_full.csv"
+    ACS_2.to_csv(f"{check_directory}/{file_name}",index = False)
 
 
 

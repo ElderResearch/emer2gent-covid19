@@ -108,7 +108,6 @@ if  __name__ == "__main__":
     CDC_deaths = pd.read_csv(path_deaths) ; print(f"CDC_deaths.shape = {CDC_deaths.shape}")
     CDC_confirmed = pd.read_csv(path_confirmed) ; print(f"CDC_confirmed.shape = {CDC_confirmed.shape}")
 
-
     # Columns renamed for consistency across tables unique idetifying keys 
     CDC_deaths.rename(
                     inplace = True , 
@@ -128,6 +127,21 @@ if  __name__ == "__main__":
                             }
                     ) 
 
+    
+    # Handel cases: Statewide Unallocated -> CDC has missing county level data 
+    # Despite having policy data present we will not have data in any other fields eg. weather, ACS and so we have droped these cases
+    CDC_deaths = CDC_deaths[~(CDC_deaths["county"] == "Statewide Unallocated")]
+    CDC_confirmed = CDC_confirmed[~(CDC_confirmed["county"] == "Statewide Unallocated")]
+
+    # same as above  
+    CDC_deaths = CDC_deaths[~(CDC_deaths["county"] == "New York City Unallocated/Probable")]
+    CDC_confirmed = CDC_confirmed[~(CDC_confirmed["county"] == "New York City Unallocated/Probable")]
+
+
+    print(f"CDC_deaths.shape = {CDC_deaths.shape}")
+    print(f"CDC_confirmed.shape = {CDC_confirmed.shape}")
+
+    # Get cross sectiona form: 
     CDC_deaths_df = to_cross_sectional_df(CDC_df = CDC_deaths,obs_name="deaths")
     CDC_confirmed_df = to_cross_sectional_df(CDC_df = CDC_confirmed,obs_name="confirmed")
 
