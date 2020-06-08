@@ -262,5 +262,5 @@ if (!interactive()) {
   flog.info('Writing results.')
   # Write results
   write.csv(fdist_all, 'data/fips_to_asos_distance_comparison.csv', row.names=F)
-  write.csv(fips_df, file=gzfile("data/weather_by_county_fips.gz"), row.names=F)
+  write.csv(fips_df, file=gzfile("data/weather_by_county_fips.csv.gz"), row.names=F)
 }
