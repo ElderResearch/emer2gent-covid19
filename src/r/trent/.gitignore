@@ -1,0 +1,5 @@
+.Rhistory
+.Rprofile
+*.csv
+*.gz
+.gapikey
