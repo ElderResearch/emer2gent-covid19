@@ -27,3 +27,7 @@ typed-ast==1.4.1
 urllib3==1.25.9
 us==2.0.2
 zipp==3.1.0
+bs4==0.0.1
+matplotlib==3.2.1
+boto3==1.13.24
+xlrd==1.2.0
