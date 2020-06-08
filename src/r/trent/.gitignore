@@ -2,3 +2,10 @@
 .Rhistory
 .Rprofile
 .gapikey
+*.csv
+*.gz
+
+# renv stuff
+library/
+python/
+staging/
