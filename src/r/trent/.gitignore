@@ -1,5 +1,4 @@
+!data/
 .Rhistory
 .Rprofile
-*.csv
-*.gz
 .gapikey
