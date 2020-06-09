@@ -57,7 +57,7 @@ if __name__ == "__main__":
 
     # Import global google mobility data & filter for US
     data_dir = Path(__file__).resolve().parents[5] / "data"
-    mobility_file = data_dir / "US_mobility_data.csv"
+    mobility_file = data_dir / "intermediate" / "US_mobility_data.csv"
     if not mobility_file.exists():
         logging.info(f"{mobility_file} does not exist.")
         mobility_raw = get_google_mobility()
