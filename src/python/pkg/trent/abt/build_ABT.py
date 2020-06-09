@@ -98,7 +98,22 @@ def join_all_data():
     del ABT_V3["proxy_fip"]
     print(f"ABT_V3.shape ={ABT_V3.shape}")
 
-    return ABT_V3
+    # -------------------------------------------------------------------------------
+    # STEP 5: Add Unemployment Data (county level)
+    # Data has been formated to crossectonal form -> with join keys date and county_fip 
+    # Add uneployment data: 
+    ABT_V4 = pd.merge(ABT_V3 ,DoL_df, 
+                        how = "left" , 
+                        left_on = ["county_fip","date"] , 
+                        right_on = ["county_fip","date"],
+                        suffixes=('', '_dropMe')
+                        )
+    ABT_V4.drop(ABT_V4.filter(regex='_dropMe$').columns.tolist(),axis=1, inplace=True)
+    print(f"ABT_V4.shape ={ABT_V4.shape}")
+
+
+
+    return ABT_V4 
 
 
 def parse_state(county_fips):
@@ -147,6 +162,22 @@ if  __name__ == "__main__":
     # Census data created by join_census_data.py
     file_name = "ACS_full.csv"
     ACS_full_df = pd.read_csv(f"{intermediate_directory}/{file_name}")
+
+    # Get Uneployment data 
+    file_name = "DoL_daily_county.csv.gz"
+    DoL_df = pd.read_csv(f"{data_directory}/{file_name}", compression='gzip', error_bad_lines = False)
+
+    # Clean uneployment: (carl you could add this to your script instead of having it here? )
+    DoL_df.rename(
+                    inplace = True , 
+                    columns = {
+                                "Date":"date",
+                                "County Name": "county",
+                                "State": "state"
+                            }
+                    ) 
+
+    del DoL_df["State Code"]
 
     # Get ABT 
     ABT_final = join_all_data()
