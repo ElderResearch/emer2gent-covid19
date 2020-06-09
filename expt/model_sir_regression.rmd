@@ -521,7 +521,7 @@ summary(mm)
 
 ### North Carolina example
 
-```{r}
+```{r, include=F, eval=F}
 ff <- bf(
   daily_inf_p1 ~ -1 + 
     daily_inf*suscept_norm + 
@@ -541,100 +541,3 @@ mm <- brm(
   cores = 4
 )
 ```
-
-
-
-
-
-
-
-
-
-## Blah
-
-Load the full ABT:
-
-```{r, eval=F, include=F}
-# 350,000 guess limit lets readr pick up on all indicator columns
-abt_raw <- read_csv(here("data/ABT_V1.csv"), guess_max = 3.5e5)
-```
-
-
-```{r}
-abt_raw %>% 
-  filter(state_fip != state_fips)
-```
-
-
-We only need a few columns for modeling:
-
- - State and county FIPS
- - Date
- - Infections
- - Population
-
-We also need indicators of interventions for later work. These tend to have three states: None Issued, 0, and 1.
-
-```{r}
-abt_sir_1 <- abt_raw %>% 
-  select(
-    state_fips, county_fips, date, confirmed, acs_pop_total,
-    pol_travel_limit = travel_limit,
-    pol_stay_home = stay_home,
-    pol_education = educational_fac,
-    pol_reopen_1 = phase_1,
-    pol_reopen_2 = phase_2,
-    pol_reopen_3 = phase_3,
-  )
-```
-
-```{r}
-abt_sir_1 %>% janitor::tabyl(travel_limit)
-abt_sir_1 %>% janitor::tabyl(stay_home)
-abt_sir_1 %>% janitor::tabyl(educational_fac)
-abt_sir_1 %>% janitor::tabyl(phase_1)
-abt_sir_1 %>% janitor::tabyl(phase_2)
-abt_sir_1 %>% janitor::tabyl(phase_3)
-```
-
-
-
-
-
-
-
-
-
-
-
-
-
-Recode each as "active" and "ever issued."
-
-```{r}
-# Recode values as 1 or 0, _ASSUMING SORTED APPROPRIATELY_
-recode_policy <- function(col) {
-  as.integer(replace(col, col != "1", "0"))
-}
-
-# Indicate if something has _ever_ been put into place
-recode_ever <- function(col) {
-  v <- rep(0, length(col))
-  
-  t1 <- which(col == 1)
-  if (length(t1) == 0) return(v)
-  
-  v[seq_along(v) >= min(t1)] <- 1
-  v
-}
-```
-
-```{r}
-abt_sir_3 <- abt_sir_2 %>% 
-  group_by(state_fips, county_fips) %>% 
-  arrange(state_fips, county_fips, date) %>% 
-  mutate(across(starts_with("pol_"), recode_policy)) %>% 
-  mutate(across(starts_with("pol_"), recode_ever, .names = "{col}_ever")) %>% 
-  ungroup()
-```
-
