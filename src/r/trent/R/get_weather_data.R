@@ -58,6 +58,7 @@ get_fip_codes <- function() {
       as_tibble(df) %>%
         mutate(across(where(is.character), ~ str_remove_all(.x, '[[:punct:]]'))) %>% 
         mutate(across(where(is.character), ~ gsub('Hawaiʻi','Hawaii', .x))) %>%
+        mutate(across(where(is.character), ~ gsub('Columbial','Columbia', .x))) %>%
         mutate(across(where(is.character), str_trim)) %>%
         mutate(across(where(is.character), ~ na_if(.x, ''))) %>%
         na.omit()
@@ -113,8 +114,9 @@ geocode_fips <- function(google_api_key=NULL) {
     suppressMessages(geocode(term, output='more', override_limit=TRUE))
   })
   fips <- bind_cols(fips, coords)
-  flog.info("FIPS geocoded sucesfully")
+  flog.info("FIPS geocoded sucesfully. Writing results to `data/`")
   write.csv(fips, 'data/fips_geocoded.csv', row.names=FALSE)
+  return(fips)
 }
 
 # Main-Routine ------------------------------------------------------------
