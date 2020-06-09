@@ -133,9 +133,16 @@ if  __name__ == "__main__":
     CDC_deaths = CDC_deaths[~(CDC_deaths["county"] == "Statewide Unallocated")]
     CDC_confirmed = CDC_confirmed[~(CDC_confirmed["county"] == "Statewide Unallocated")]
 
-    # same as above  
+    # New york city is present in data -> county name is new york county -> remove the bellow as we dont have fips 
     CDC_deaths = CDC_deaths[~(CDC_deaths["county"] == "New York City Unallocated/Probable")]
     CDC_confirmed = CDC_confirmed[~(CDC_confirmed["county"] == "New York City Unallocated/Probable")]
+
+    # Further edge cases: (no fips and not states)
+    CDC_deaths = CDC_deaths[~(CDC_deaths.county == "Wade Hampton Census Area")]
+    CDC_confirmed = CDC_confirmed[~(CDC_confirmed.county == "Wade Hampton Census Area")]
+
+    CDC_deaths = CDC_deaths[~(CDC_deaths.county == "Grand Princess Cruise Ship")]
+    CDC_confirmed = CDC_confirmed[~(CDC_confirmed.county == "Grand Princess Cruise Ship")]
 
 
     print(f"CDC_deaths.shape = {CDC_deaths.shape}")

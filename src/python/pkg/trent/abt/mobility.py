@@ -67,6 +67,7 @@ def filter_for_US(mobility_raw):
     US_mobility_df.reset_index(inplace = True)
     US_mobility_df["date"] = US_mobility_df.date.apply(lambda x: datetime.strptime(x, "%Y-%m-%d"))
 
+    # Drop unneeded columns: 
     # Print for time interval data exisits on & shape 
     print(f"US_mobility_df.shape = {US_mobility_df.shape}")
     t0 = US_mobility_df.sort_values("date")["date"].iloc[0]
@@ -128,6 +129,11 @@ if  __name__ == "__main__":
     US_mobility_df = US_mobility_df[~US_mobility_df.state.isna()]
     US_mobility_df = US_mobility_df[~US_mobility_df.county.isna()]
 
+    # Drop Columns that are redundent 
+    del US_mobility_df["index"]
+    del US_mobility_df["country"]
+    del US_mobility_df["country_region"]
+    
     # Export: Check that intermediate data folder exisits O.W create 
     check_directory = os.path.abspath("data/intermediate")
     print(check_directory)

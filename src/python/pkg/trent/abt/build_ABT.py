@@ -83,12 +83,13 @@ def join_all_data():
     # Census data is using state_fips as the prefix to the full fips AND county fips the suffix 
     # We need to create these in order to joi without dublications 
     fips_id = ABT_V2.county_fip.apply(str)
-    ABT_V2["state_code"] = fips_id.apply(parse_state).apply(int)
+    ABT_V2["state_fip"] = fips_id.apply(parse_state).apply(int)
     ABT_V2["proxy_fip"] = fips_id.apply(parse_county).apply(int)
+
     # JOIN  using common keys: 
     ABT_V3 = pd.merge(ABT_V2 ,ACS_full_df, 
                       how = "left" , 
-                      left_on = ["state_code","proxy_fip"] , 
+                      left_on = ["state_fip","proxy_fip"] , 
                       right_on = ["state_fips","county_fips"],
                       suffixes=('', '_dropMe')
                      )
