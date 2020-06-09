@@ -1,148 +1,114 @@
 #!/usr/bin/env python3
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
-import requests
-import math
 import io
-import os
+import logging
+from pathlib import Path
 
-pd.options.mode.chained_assignment = None 
+import pandas as pd
+import requests
 
+pd.options.mode.chained_assignment = None
 
-""" 
-Overview: 
+logging.basicConfig(level=logging.INFO)
 
-Extract Google Mobility data for US at a county level   
+"""
+Overview:
+
+Extract Google Mobility data for US at a county level
 url: https://www.google.com/covid19/mobility/
 
 Mobility data updated weekly in global cvs. The data contains;
 - sub_region_1
-- sub_region_2 
+- sub_region_2
 - country_region_code
-- retail_and_recreation_percent_change_from_baseline  
+- retail_and_recreation_percent_change_from_baseline
 - grocery_and_pharmacy_percent_change_from_baseline
-- parks_percent_change_from_baseline 
-- transit_stations_percent_change_from_baseline 
+- parks_percent_change_from_baseline
+- transit_stations_percent_change_from_baseline
 - workplaces_percent_change_from_baseline
 - residential_percent_change_from_baseline
 
-We will filter for US & add the Federal Information Processing Standards (FIPS) on a county level 
+We will filter for US & add the Federal Information Processing
+Standards (FIPS) on a county level
 - FIPS mapping can be found @ data/fips.csv from repo. root
 """
 
 
-
 # ------- Functions ------- #
+
 
 def get_google_mobility():
     """
-    Download Global googles mobility data 
-    Allows you to simply update the mobility data when new data is relased 
+    Download Google's global mobility data
     """
-    url = 'https://www.google.com/covid19/mobility/'
-    print("Scraping Google Mobility data -----------")
-    # Extract the link that polits to the csv 
-    response_txt = requests.get(url).text #html raw  
-    HTML_parse = BeautifulSoup(response_txt, "html.parser")
-    tag = HTML_parse.find('a', {"class": "icon-link"})
-    link = tag['href']
-    
-    # request link to csv & load to pandas dataFrame 
-    response = requests.get(link).content
-    global_df = pd.read_csv( io.StringIO(response.decode('utf-8')),low_memory = False)
+    url = "https://www.gstatic.com/covid19/mobility/Global_Mobility_Report.csv"
+    logging.info("Downloading Google mobility data")
 
-    print(" -----------> Complete")
-    print(f"mobility_df.shape = {global_df.shape}")
-    return global_df
+    # request csv & load to pandas dataFrame
+    r = requests.get(url)
+    r.raise_for_status()
+    logging.info("Download complete")
+
+    return pd.read_csv(
+        io.StringIO(r.content.decode("utf-8")), low_memory=False, parse_dates=["date"]
+    )
 
 
-def filter_for_US(mobility_raw): 
-    """
-    Filder Globle mobility data to United States
-    Further converts string date column to time stamp "Year-Month-Day"
-    """
-    US_mobility_df = mobility_raw[mobility_raw.country_region == 'United States']
-    US_mobility_df.reset_index(inplace = True)
-    US_mobility_df["date"] = US_mobility_df.date.apply(lambda x: datetime.strptime(x, "%Y-%m-%d"))
+if __name__ == "__main__":
 
-    # Drop unneeded columns: 
-    # Print for time interval data exisits on & shape 
-    print(f"US_mobility_df.shape = {US_mobility_df.shape}")
-    t0 = US_mobility_df.sort_values("date")["date"].iloc[0]
-    tn = US_mobility_df.sort_values("date")["date"].iloc[-1]
-    print(f"Time-Period: {t0} to {tn}")
+    # Import global google mobility data & filter for US
+    data_dir = Path(__file__).resolve().parents[5] / "data"
+    mobility_file = data_dir / "US_mobility_data.csv"
+    if not mobility_file.exists():
+        logging.info(f"{mobility_file} does not exist.")
+        mobility_raw = get_google_mobility()
+        US_mobility_df = mobility_raw[mobility_raw.country_region == "United States"]
+        US_mobility_df.reset_index(inplace=True, drop=True)
 
-    return US_mobility_df
+        # Columns renamed for consistency across tables unique identifying keys
+        # Drop "percent_change_from_baseline" suffix for more compact representation
+        US_mobility_df.rename(
+            inplace=True,
+            columns={
+                "sub_region_1": "state",
+                "sub_region_2": "county",
+                "country_region_code": "country",
+                "retail_and_recreation_percent_change_from_baseline": "retail_and_recreation",
+                "grocery_and_pharmacy_percent_change_from_baseline": "grocery_and_pharmacy",
+                "parks_percent_change_from_baseline": "parks",
+                "transit_stations_percent_change_from_baseline": "transit_stations",
+                "workplaces_percent_change_from_baseline": "workplaces",
+                "residential_percent_change_from_baseline": "residential",
+            },
+        )
 
+        # District of Columbia can be assumed as a county -> replace missing county
+        # entry with 'state' name
+        US_mobility_df.loc[
+            US_mobility_df.state == "District of Columbia", "county"
+        ] = "District of Columbia"
 
-def add_fips(US_mobility_df,fips_df): 
-    """
-    Join fips data to mobility data usinfg state & county columns (left join)
-    returns data with added [county_fip, state_code]
-    """
-    JOIN_df  = pd.merge(US_mobility_df ,fips_df, 
-                      how = 'left' , 
-                      left_on = ['state','county'] , 
-                      right_on = ['state','county']
-                     )
-    print(f"JOIN_df.shape = {JOIN_df.shape}")
-    return JOIN_df
+        # Drop Columns that are redundent
+        del US_mobility_df["country"]
+        del US_mobility_df["country_region"]
 
+        # Import and join fips.csv to US_mobility -> this is one of our unique keys
+        # fips.csv exists in data folder created by src/python/init_project.py
+        fips_file = data_dir / "fips.csv"
+        fips_df = pd.read_csv(fips_file)
+        logging.info("Joining mobility data to FIPS data")
+        US_mobility_df = pd.merge(
+            US_mobility_df,
+            fips_df,
+            how="left",
+            left_on=["state", "county"],
+            right_on=["state", "county"],
+        )
 
-if  __name__ == "__main__":
-    
-    # Import global google mobility data & filter for US ;
-    print(os.getcwd()) 
-    mobility_raw = get_google_mobility()
-    US_mobility_df = filter_for_US(mobility_raw)
+        # Filter: Drop the missing values in state & county - we cant identify their
+        # fips code on all levels
+        US_mobility_df = US_mobility_df[~US_mobility_df.state.isna()]
+        US_mobility_df = US_mobility_df[~US_mobility_df.county.isna()]
 
-    # Columns renamed for consistency across tables unique idetifying keys 
-    # Drop percent_change_from_baseline suffix for more compact representation 
-    US_mobility_df.rename(
-                inplace = True , 
-                columns = {
-                            'sub_region_1': 'state', 
-                            'sub_region_2': 'county', 
-                            'country_region_code': 'country', 
-                            'retail_and_recreation_percent_change_from_baseline': 'retail_and_recreation_percent',
-                            'grocery_and_pharmacy_percent_change_from_baseline': 'grocery_and_pharmacy',
-                            'parks_percent_change_from_baseline' : "parks",
-                            'transit_stations_percent_change_from_baseline' : 'transit_stations',
-                            'workplaces_percent_change_from_baseline': 'workplaces',
-                            'residential_percent_change_from_baseline' : 'residential'
-                        }
-                ) 
-
-    # Disctrict of Columbia can be assumed as a county -> replace missing county enrty with 'state' name 
-    US_mobility_df.loc[US_mobility_df.state == "District of Columbia","county"] = "District of Columbia"
-
-    # Import and join fips.csv to US_mobility -> this is one of our unique idetifying keys 
-    # fips.csv exisits in data folder create by python src/python/init_project.py
-    fips_abs_path = os.path.abspath("data/fips.csv")
-    print(fips_abs_path)
-    fips_df = pd.read_csv(fips_abs_path)
-    US_mobility_df = add_fips(US_mobility_df,fips_df)
-
-    # Filter: Drop the missing values in state & county - we cant idetify their fips code on all levels 
-    US_mobility_df = US_mobility_df[~US_mobility_df.state.isna()]
-    US_mobility_df = US_mobility_df[~US_mobility_df.county.isna()]
-
-    # Drop Columns that are redundent 
-    del US_mobility_df["index"]
-    del US_mobility_df["country"]
-    del US_mobility_df["country_region"]
-    
-    # Export: Check that intermediate data folder exisits O.W create 
-    check_directory = os.path.abspath("data/intermediate")
-    print(check_directory)
-    if not os.path.exists(check_directory):
-        os.makedirs(check_directory)
-
-    # Export US_mobility_df to csv 
-    file_name = "US_mobility_data.csv"
-    US_mobility_df.to_csv(f"{check_directory}/{file_name}",index = False)
-
-
-
+        # Export US_mobility_df to csv
+        US_mobility_df.to_csv(mobility_file, index=False)
+        logging.info(f"Mobility data written to {mobility_file}")
