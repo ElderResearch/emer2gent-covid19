@@ -12,13 +12,17 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r}
 options(stringsAsFactors = FALSE)
 
-library(magrittr)
-library(tidyverse)
-library(here)
-library(brms)
-library(tidybayes)
-library(furrr)
-library(lme4)
+suppressPackageStartupMessages({
+  library(magrittr)
+  library(tidyverse)
+  library(here)
+  library(brms)
+  library(tidybayes)
+  library(furrr)
+  library(widyr)
+})
+
+source(here("src/R/trent/R/sir.R"))
 ```
 
 
@@ -34,510 +38,353 @@ Converting the equation for $\dot I(t)$ to a difference equation gives
 $$
 I(T+1) = I(T) \cdot \left[ (1 - \gamma) + \beta S(T) / N \right],
 $$
-with $N$ the population size. This makes a number of assumptions, including homogeneous mixing and that a county's population is fixed within the county. In practice this shouldn't matter because the _effect_ spreading community size for an individual is much smaller than their entire county.
+with $N$ the population size. Modeling this directly imposes a number of assumptions, including homogeneous mixing and that a county's population is fixed within the county. In practice this second assumptions shouldn't matter too much because the _effective_ community size for an individual is (likely?) much smaller than their entire county. 
+
+## Assumptions
+
+ - We can fit the SIR equation directly using raw infections data
+ - I wonder if we can scale $I(t)$ and see how it goes.
+ - Very simple imputations are used here
 
 ## Results
+
+Adding confounders doesn't seem to hurt the R0 estimate, and the coefficients look OK directionally. I've also tried 3-way interactions to try and capture $d\beta/dX$, but it isn't clear that is the correct thing.
+
+I'm also very aware that I'm getting the numbers I _want_ to get (positive R0 > 1) so I need to be even more suspicious of this.
 
 
 # Data prep
 
 ## Loading and checking
 
-Using the raw CDC data until the ABT is solidified:
+This function puts the data in SIR form, meaning:
+
+ - *I(t)* is calculated by differencing `confirmed`
+ - *S(t)* is calculated directly from `confirmed` and the ACS population measure
+
+We've also found that some $I(t)$ and $\mathbb{I}(T) \equiv \sum_{t=0}^T I(t)$ entries are negative, maybe because of corrections to the data made later. So we apply an approach that:
+
+ 1. Corrects $I(t) \to 0$ if negative
+ 2. Back-corrects $\mathbb{I}(t-1)$ and $I(t-1)$ to make things work out OK
+
 
 ```{r}
-cdc_raw <- read_csv(here("data/CDC_full_data.csv"))
-acs_pop_raw <- read_csv(here("data/acs_dem_pop.csv"))
-```
-
-NB: Two "counties" don't have ACS data, but one is a cruise ship and the other doesn't exist on Wikipedia.
-
-```{r}
-abt_raw <- acs_pop_raw %>% 
-  mutate(county_fip = as.integer(str_c(state_fips, county_fips))) %>% 
-  left_join(cdc_raw, ., by = "county_fip")
-
-abt_raw %>% 
-  filter(is.na(county_fips)) %>% 
-  distinct(county_fip, .keep_all = T) %>% 
-  select(county_fip:county)
-
-# Remove these two "counties"
-abt_raw <- abt_raw %>% filter(!is.na(state_fips))
+abt_master <- fetch_abt(here("data/processed/ABT_V1.csv"))
 ```
 
 No missing values:
 
-```{r}
-abt_raw %>% 
+```{r, echo = F}
+abt_master %>% 
   summarize(across(.fn = ~ sum(is.na(.)))) %>% 
   gather(column, na_values) %>% 
   knitr::kable()
 ```
 
+Correlations:
 
-## Data reshaping
-
-We need to put the data in SIR form.
-
- - *I(t)* can be calculated as a difference of `confirmed`
- - *S(t)* can be calculated directly from `confirmed` and the ACS population
-
-### SIR data cleaning
-
-Some $I(t)$ and $\mathbb{I}(T) \equiv \sum_{t=0}^T I(t)$ entries are negative, maybe because of corrections to the data. So we apply an approach that:
-
- 1. Corrects $I(t) \to 0$ if negative
- 2. Back-corrects $\mathbb{I}(t-1)$ and $I(t-1)$ to make things work out OK
-
-```{r}
-# Back-correct the confirmed infection counts to make changes non-negative.
-# This function takes a vector, computes the difference between entries, 
-# and fixed negative values.
-correct_negative_it <- function(col) {
-  new_col <- c(col)
-  # Iterate backwards to index 2 (leave 1 out for caluclating difference)
-  for (i in seq(length(new_col), 2, -1)) {
-    it <- new_col[i] - new_col[i - 1]
-    if (it >= 0) next
-    # Make it go to zero by fixing the last record
-    new_col[i - 1] <- new_col[i - 1] + it
-  }
-  new_col
-}
-```
-
-```{r}
-abt_sir_1 <- abt_raw %>% 
-  group_by(county_fip) %>% 
-  arrange(county_fip, date) %>% 
-  mutate(
-    confirmed_orig = confirmed, 
-    confirmed = correct_negative_it(confirmed_orig)
-  ) %>% 
-  ungroup()
-```
-
-```{r, eval=F, include=F}
-# Check
-check_abt_1 <- abt_sir_1 %>% 
-  group_by(county_fip) %>% 
-  arrange(county_fip, date) %>% 
-  transmute(
-    date, 
-    confirmed, 
-    confirmed_orig,
-    confirmed_lag = lag(confirmed_orig), 
-    delta = confirmed_orig - confirmed_lag
-  )
-
-# This is the problem
-check_abt_1 %>% 
-  filter(delta < 0) %>% 
-  arrange(delta)
-
-check_abt_1 %>%
-  filter(county_fip == 32003) %>%
-  select(date, confirmed, confirmed_lag, delta) %>%
-  mutate(bad = if_else(delta < 0, "***", "")) %>% 
-  View()
-
-abt_sir_1 <- abt_raw %>% 
-  group_by(county_fip) %>% 
-  arrange(county_fip, date) %>% 
-  mutate(
-    old_confirmed = confirmed,
-    confirmed = correct_negative_it(old_confirmed)
-  ) %>% 
-  ungroup()
-```
-
-### SIR transformation
-
-
-
-
-## Partitioning
-
-No partitions, not inferring.
-
-
-## Final form
-
-Apply the SIR transformations.
-
-Assumption: We only consider counties that have reported anything. Because
-we want to track the progression, not whether it exists in a county or not.
-And including many zeros seems bad for the model.
-
-```{r}
-abt_final <- abt_sir_1 %>% 
-  group_by(county_fip) %>% 
-  arrange(county_fip, date) %>% 
-  transmute(
-    state_code,
-    date, 
-    pop = acs_pop_total, 
-    cuml_inf = confirmed,
-    cuml_inf_norm = confirmed / pop,
-    suscept = pop - confirmed, 
-    suscept_norm = suscept / pop,
-    daily_inf = confirmed - lag(confirmed), 
-    daily_inf_p1 = lead(daily_inf)
-  ) %>% 
-  na.omit() %>% 
-  ungroup()
-
-# Remove counties with no records _and_ the weeks without reporting
-# at the front of the curve.
-abt_final <- abt_final %>% 
-  group_by(county_fip) %>% 
-  arrange(county_fip, date) %>% 
-  group_modify(~ {
-    .x$ok <- as.integer(any(.x$daily_inf > 0))
-    .x$min_date <- min(.x$date[.x$daily_inf > 0])
-    .x
-  })
-
-abt_final <- abt_final %>% 
-  filter(ok == 1, date >= min_date) %>% 
-  ungroup()
-
-head(abt_final)
-```
-
-```{r}
-cor(abt_final[,c("daily_inf", "suscept", "suscept_norm", "cuml_inf")])
+```{r, echo = F}
+abt_master %>% 
+  select(where(is.numeric)) %>% 
+  cor() %>% 
+  corrplot::corrplot(method = "color", order = "hclust", tl.col = "black")
 ```
 
 
 # Modeling
 
-## Check the data
+## Data review
 
-### Option 1: Differencing
+How are the various quantities distributed?
+This will be challenging to fit.
 
-```{r}
-abt_final %>%
-  sample_n(1e4) %>% 
-  ggplot(aes(daily_inf, daily_inf_p1)) + 
-  geom_point() + 
-  scale_x_log10() + 
-  scale_y_log10()
+```{r, echo = F}
+abt_master %>% 
+  ggplot(aes(cuml_inf)) +
+  geom_histogram(bins = 20)
+
+abt_master %>% 
+  ggplot(aes(daily_inf)) +
+  geom_histogram(bins = 20)
+
+abt_master %>% 
+  ggplot(aes(suscept_norm)) +
+  geom_histogram(bins = 20)
 ```
-
-```{r}
-abt_final %>%
-  sample_n(1e4) %>% 
-  ggplot(aes(cuml_inf, daily_inf_p1)) + 
-  geom_point() + 
-  scale_x_log10() + 
-  scale_y_log10()
-```
-
-```{r}
-abt_final %>%
-  sample_n(1e4) %>% 
-  ggplot(aes(cuml_inf, daily_inf)) + 
-  geom_point() + 
-  scale_x_log10() + 
-  scale_y_log10()
-```
-
-```{r}
-abt_final %>% 
-  filter(county_fip==37183) %>% 
-  ggplot(aes(date)) + 
-  geom_line(aes(y=daily_inf), color='red') + 
-  geom_line(aes(y=cuml_inf), color='blue')
-```
-
-
-
 
 ## Simple linear regression
 
 Fit simple linear regressions at various levels to convince myself this is worth pursuing further.
 
 ```{r}
-fit_lm <- function(data) {
-  lm(daily_inf_p1 ~ daily_inf + daily_inf:suscept_norm, data = data)
+# Simple, SIR-based fit
+simple_lm_fit <- function(data) {
+  lm(daily_inf_target ~ daily_inf + daily_inf:suscept_norm, data = data, weights = data$pop)
+}
+
+# Add some potential confounders
+less_simple_lm_fit <- function(data) {
+  lm(daily_inf_target ~ 
+       daily_inf + daily_inf:suscept_norm
+     + median_inc + minority_frac + tmpf_mean + relh_mean
+     + mobility_transit_stations + mobility_retail_and_recreation 
+     + mobility_grocery_and_pharmacy + mobility_parks
+     + mobility_workplaces + mobility_residential
+     + phase_1_active + phase_1_ever, data = data, weights=data$pop)
 }
 ```
-
-
-```{r}
-extract_lm <- function(tbl, model_col, which = c("summary", "coefs")) {
-  which <- match.arg(which, several.ok = T)
-  assertthat::are_equal(nrow(tbl), 1)
-  
-  # Get model summary and convert to "term/estimate" format
-  ms_ <- tibble()
-  if ("summary" %in% which) {
-    ms_ <- tbl %>% 
-      pull({{model_col}}) %>% 
-      extract2(1) %>% 
-      broom::glance() %>% 
-      pivot_longer(everything(), names_to = "term", values_to = "estimate") %>% 
-      mutate(.component = "summary") %>% 
-      relocate(.component, 0)
-  }
-  
-  # Get coefs
-  coef_ <- tibble()
-  if ("coefs" %in% which) {
-    coef_ <- tbl %>% 
-      pull({{model_col}}) %>% 
-      extract2(1) %>% 
-      broom::tidy(conf.int = 0.89) %>% 
-      mutate(.component = "coefs") %>% 
-      relocate(.component, 0)
-  }
-  
-  bind_rows(ms_, coef_)
-}
-```
-
 
 ### Global model
 
 The global model is very confident of the parameters:
 
 ```{r}
-lm_all_global <- abt_final %>% 
-  summarize(model = list(fit_lm(.))) %>% 
+lm_all_global <- abt_master %>% 
+  summarize(model = list(simple_lm_fit(.))) %>% 
   extract_lm(model, which = "coef")
 
 lm_all_global
-lm_all_global[[3,3]] / (1 - lm_all_global[[2,3]])
+
+# R0 = beta / gamma
+lm_all_global[[3, 3]] / (1 - lm_all_global[[2, 3]])
 ```
+
+The confounder model is plausible (not changing R0 by much). And I've done no feature selection, no scaling, etc.
+
+```{r}
+lm_all_global_confound <- abt_master %>% 
+  summarize(model = list(less_simple_lm_fit(.))) %>% 
+  extract_lm(model, which = "coef")
+
+lm_all_global_confound
+
+# R0 = beta / gamma
+lm_all_global_confound[[15, 3]] / (1 - lm_all_global[[2, 3]])
+```
+
+Let's try a more physically interesting model.
+
+```{r}
+lm_fit_3 <- function(data) {
+  lm(daily_inf_target ~ daily_inf + daily_inf:suscept_norm
+     + daily_inf:suscept_norm:phase_1_active
+     + daily_inf:suscept_norm:mobility_transit_stations
+     + daily_inf:suscept_norm:minority_frac
+     + daily_inf:phase_1_active
+     + daily_inf:mobility_transit_stations
+     + daily_inf:minority_frac
+     + median_inc + minority_frac + tmpf_mean + relh_mean
+     + mobility_transit_stations + mobility_retail_and_recreation 
+     + mobility_grocery_and_pharmacy + mobility_parks
+     + mobility_workplaces + mobility_residential
+     + phase_1_active + phase_1_ever, data = data, weights = data$pop)
+}
+```
+
+```{r}
+lm_all_global_confound_3 <- abt_master %>% 
+  summarize(model = list(lm_fit_3(.))) %>% 
+  extract_lm(model, which = "coef")
+
+lm_all_global_confound_3 %>%
+  knitr::kable()
+
+lm_all_global_confound_3 %>% 
+  summarize(
+    beta = estimate[term == "daily_inf:suscept_norm"], 
+    gamma = 1 - estimate[term == "daily_inf"], 
+    r0 = beta / gamma
+  ) %>% 
+  arrange(-r0)
+```
+
 
 ### State model
 
 ```{r}
-lm_all_state <- unique(abt_final$state_code) %>% 
-  future_map_dfr(~ {
-    abt_final %>% 
-      filter(state_code == .x) %>% 
-      group_by(state_code) %>% 
-      summarize(model = list(fit_lm(.)), .groups = "keep") %>% 
-      group_modify(~ extract_lm(., model, which = "coef"))
-  })
+lm_all_state <- abt_master %>% 
+  group_by(state_code) %>% 
+  group_modify(~ {
+    .x %>% 
+      summarize(model = list(simple_lm_fit(.))) %>% 
+      extract_lm(model, which = "coef")
+  }) %>% 
+  ungroup()
 
 lm_all_state %>% 
+  knitr::kable()
+
+# One wonders what drives the issues with beta and gamma.
+# That we get decent R0 values suggests it's a measurment issue for I(t) ?
+lm_all_state %>% 
   group_by(state_code) %>% 
-  summarize(beta = estimate[3], gamma = 1 - estimate[2], r0 = beta / gamma)
+  summarize(beta = estimate[3], gamma = 1 - estimate[2], r0 = beta / gamma) %>% 
+  arrange(-r0)
 ```
+
+Again, with confounders: still OK.
+
+```{r}
+lm_all_state_confound <- abt_master %>% 
+  group_by(state_code) %>% 
+  group_modify(~ {
+    .x %>% 
+      summarize(model = list(less_simple_lm_fit(.))) %>% 
+      extract_lm(model, which = "coef")
+  }) %>% 
+  ungroup()
+
+lm_all_state_confound %>% 
+  knitr::kable()
+
+lm_all_state_confound %>% 
+  group_by(state_code) %>% 
+  summarize(
+    beta = estimate[term == "daily_inf:suscept_norm"], 
+    gamma = 1 - estimate[term == "daily_inf"], 
+    r0 = beta / gamma
+  ) %>% 
+  arrange(-r0)
+```
+
+### State model with smoothing
+
+We're all pretty sure that $I(t)$ is underestimated, right? What if we "manually" change $I(t)$ by some percentage and re-fit? (We aren't being careful here; in some places we're certainly saying there are _more_ infections than people, so take large values with a grain of salt.)
+
+```{r}
+REFIT_MULTIPLIERS <- c(1.1, 1.2, 1.5, 2, 5, 10)
+
+smoothing <- map_df(set_names(REFIT_MULTIPLIERS), ~ {
+  mm <- .x
+  message("Refit parameter: ", mm)
+  
+  abt_master %>% 
+    group_arrange_abt() %T>% 
+    {message("Adjusting the ABT")} %>% 
+    mutate(across(c(cuml_inf, daily_inf, daily_inf_target), ~ . * mm)) %>% 
+    mutate(suscept_norm = 1 - cuml_inf / pop) %>% 
+    group_by(state_code) %T>% 
+    {message("Modeling")} %>% 
+    group_modify(~ {
+      .x %>% 
+        summarize(model = list(less_simple_lm_fit(.))) %>% 
+        extract_lm(model)
+    }) %>% 
+    ungroup()
+}, .id = "refit_mult") %>% 
+  mutate(refit_mult = as.double(refit_mult))
+```
+
+It seems that, as I expected, R0 stays pretty consistent-ish as $\beta$ and $\gamma$ move in union. The error bars go downward, too.
+
+```{r, echo = F}
+smoothing %>% 
+  group_by(refit_mult, state_code) %>% 
+  summarize(
+    beta = estimate[term == "daily_inf:suscept_norm"], 
+    beta_err = std.error[term == "daily_inf:suscept_norm"], 
+    gamma = 1 - estimate[term == "daily_inf"], 
+    gamma_err = std.error[term == "daily_inf"], 
+    # r2 = estimate[term == "AIC"], 
+    r0 = beta / gamma
+  ) %>% 
+  ungroup() %>% 
+  gather(k, v, beta:r0) %>% 
+  ggplot(aes(refit_mult, v, color = state_code, group = state_code)) + 
+  geom_line() + 
+  facet_wrap(~ k, scales = "free_y") + 
+  scale_color_discrete(guide = F)
+```
+
+What do the variable distributions look like when smoothed? Are they easier to fit? Maybe a _very_ little bit.
+
+```{r, echo=F}
+abt_master %>% 
+  group_arrange_abt() %>% 
+  mutate(across(c(cuml_inf, daily_inf, daily_inf_target), ~ . * 2)) %>% 
+  mutate(suscept_norm = 1 - cuml_inf / pop) %>% 
+  ungroup() %>% 
+  select(cuml_inf, daily_inf, daily_inf_target, suscept_norm) %>% 
+  gather(k, v) %>% 
+  ggplot(aes(v)) + 
+  geom_histogram() + 
+  facet_wrap(~ k, scales = "free")
+```
+
 
 ### County model
 
 The county model can be...less confident. And wilder.
 
 ```{r}
-plan(multiprocess)
-
-lm_all_county <- unique(abt_final$county_fip) %>% 
-  future_map_dfr(~ {
-    abt_final %>% 
-      filter(county_fip == .x) %>% 
-      group_by(county_fip) %>% 
-      summarize(model = list(fit_lm(.)), .groups = "keep") %>% 
-      group_modify(~ extract_lm(., model))
-  })
+lm_all_county <- abt_master %>% 
+  group_by(state_code, county_fip) %>% 
+  group_modify(~ {
+    .x %>% 
+      summarize(model = list(simple_lm_fit(.))) %>% 
+      extract_lm(model, which = "coef")
+  }) %>% 
+  ungroup()
 
 lm_all_county %>% 
-  group_by(county_fip) %>% 
-  summarize(beta = estimate[3], gamma = 1 - estimate[2], r0 = beta / gamma)
+  group_by(state_code, county_fip) %>% 
+  summarize(beta = estimate[3], gamma = 1 - estimate[2], r0 = beta / gamma) %>% 
+  arrange(-r0)
 ```
 
-There's the expected funnel:
+This is a very interesting plot...
 
-```{r}
-abt_final %>% 
+```{r, echo = F}
+abt_master %>% 
   distinct(county_fip, pop) %>% 
-  left_join(lm_all_county, .) %>% 
-  filter(term == "daily_inf:suscept_norm") %>% 
+  left_join(lm_all_county, ., by = "county_fip") %>% 
+  filter(str_detect(term, "daily_inf")) %>% 
   ggplot() + 
   geom_point(aes(pop, estimate)) + 
   geom_errorbar(aes(
-    estimate, 
-    ymin = estimate - 2 * std.error, 
+    pop,
+    ymin = estimate - 2 * std.error,
     ymax = estimate + 2 * std.error
-  ))
+  )) +
+  facet_wrap(~ term) + 
+  scale_x_log10()
 ```
 
-And again:
+This suggests the model will be very tough to fit. Earlier plots suggested that $S(t) / N$ is so nearly 1.0 that it's tough to fit.
 
 ```{r}
-abt_final %>% 
-  distinct(county_fip, pop) %>% 
-  left_join(lm_all_county, .) %>% 
-  filter(term == "daily_inf") %>% 
-  ggplot() + 
-  geom_point(aes(pop, estimate)) + 
-  geom_errorbar(aes(
-    estimate, 
-    ymin = estimate - 2 * std.error, 
-    ymax = estimate + 2 * std.error
-  ))
-```
+lm_all_state %>% 
+  filter(str_detect(term, "daily_inf")) %>%
+  pairwise_cor(term, state_code, estimate)
 
-And plotted against one another. This is...not great.
-
-```{r}
 lm_all_county %>% 
-  select(county_fip, term, estimate) %>% 
-  spread(term, estimate) %>% 
-  ggplot() + 
-  geom_point(aes(daily_inf, `daily_inf:suscept_norm`)) + 
-  ylim(-50, 50) + 
-  xlim(-50, 50)
+  filter(str_detect(term, "daily_inf")) %>%
+  pairwise_cor(term, county_fip, estimate)
 ```
-
-### Global model in time
-
-Give it a rolling number of weeks.
-
-```{r}
-ROLL_WEEKS <- 6
-SHIFT_WEEKS <- 1
-
-output <- tibble()
-
-offset <- 0
-while (TRUE) {
-  date_min <- min(abt_final$date) + lubridate::weeks(SHIFT_WEEKS) * offset
-  date_max <- date_min + lubridate::weeks(ROLL_WEEKS)
-  
-  coefs <- abt_final %>% 
-    filter(date >= date_min, date < date_max) %>% 
-    summarize(model = list(fit_lm(.)), .groups = "keep") %>% 
-    group_modify(~ extract_lm(., model, which = "coef"))
-  
-  output <- coefs %>% 
-    mutate(min_date = date_min, max_date = date_max) %>% 
-    select(min_date, max_date, everything()) %>% 
-    bind_rows(output, .)
-  
-  if (date_max > max(abt_final$date)) break
-  offset <- offset + 1
-}
-
-output %>% 
-  group_by(max_date) %>% 
-  summarize(
-    beta = estimate[3],
-    ub = std.error[3],
-    gamma = 1 - estimate[2],
-    ug = std.error[2],
-    r0 = beta / gamma,
-    ur0 = r0 * sqrt((ub/beta)**2 + (ug/gamma)**2),
-  ) %>% 
-  ggplot(aes(max_date, r0)) + 
-  geom_point() + 
-  geom_errorbar(aes(ymin = r0-2*ur0, ymax=r0+2*ur0)) + 
-  scale_y_continuous(limits = c(-0.5,3), oob=scales::squish)
-```
-
-### State model in time
-
-Give it a rolling number of weeks.
-
-```{r}
-ROLL_WEEKS <- 6
-SHIFT_WEEKS <- 1
-
-output_state <- tibble()
-
-offset <- 0
-while (TRUE) {
-  date_min <- min(abt_final$date) + lubridate::weeks(SHIFT_WEEKS) * offset
-  date_max <- date_min + lubridate::weeks(ROLL_WEEKS)
-  
-  coefs <- unique(abt_final$state_code) %>% 
-    future_map_dfr(~ {
-      tmp <- abt_final %>% 
-        filter(state_code == .x) %>% 
-        filter(date >= date_min, date < date_max)
-      
-      if (nrow(tmp) == 0) return(tibble())
-      
-      tmp %>% 
-        group_by(state_code) %>% 
-        summarize(model = list(fit_lm(.)), .groups = "keep") %>% 
-        group_modify(~ extract_lm(., model, which = "coef"))
-    })
-  
-  output_state <- coefs %>% 
-    mutate(min_date = date_min, max_date = date_max) %>% 
-    select(min_date, max_date, everything()) %>% 
-    bind_rows(output_state, .)
-  
-  if (date_max > max(abt_final$date)) break
-  offset <- offset + 1
-}
-
-output_state %>% 
-  group_by(state_code, max_date) %>% 
-  summarize(
-    beta = estimate[3],
-    ub = std.error[3],
-    gamma = 1 - estimate[2],
-    ug = std.error[2],
-    r0 = beta / gamma,
-    ur0 = r0 * sqrt((ub/beta)**2 + (ug/gamma)**2),
-  ) %>% 
-  ggplot(aes(max_date, r0, color = state_code)) + 
-  geom_line() + 
-  geom_point() + 
-  geom_errorbar(aes(ymin = r0-2*ur0, ymax=r0+2*ur0)) + 
-  scale_y_continuous(limits = c(-0.5,3), oob=scales::squish) + 
-  facet_wrap(~ state_code) + 
-  scale_color_discrete(guide = F)
-```
-
 
 ## LME4
 
+This is completely unrigorous, but throw what we have from above into LME4 with random intercepts and see what we get. (Need to rescale, at a minimum.)
+
 ```{r}
-mm <- lmer(
-  daily_inf_p1 ~ daily_inf + daily_inf:suscept_norm + (daily_inf + daily_inf:suscept_norm | state_code), 
-  data = abt_final,
-  control = lmerControl(optCtrl = list(maxeval = 5e4))
+mm <- lme4::lmer(
+  daily_inf_target ~ 
+    + daily_inf + daily_inf:suscept_norm
+    # + daily_inf:suscept_norm:phase_1_active
+     # + daily_inf:suscept_norm:mobility_transit_stations
+     # + daily_inf:suscept_norm:minority_frac
+     # + daily_inf:phase_1_active
+     # + daily_inf:mobility_transit_stations
+     # + daily_inf:minority_frac
+     + median_inc + minority_frac + tmpf_mean + relh_mean
+     + mobility_transit_stations + mobility_retail_and_recreation 
+     + mobility_grocery_and_pharmacy + mobility_parks
+     + mobility_workplaces + mobility_residential
+     + phase_1_active + phase_1_ever +
+    (1 | state_code/county_fip), 
+  data = abt_master, 
+  weights = abt_master$pop
 )
 
 summary(mm)
-```
-
-
-### Total
-
-### State level
-
-### County level
-
-
-## BRMS
-
-### North Carolina example
-
-```{r, include=F, eval=F}
-ff <- bf(
-  daily_inf_p1 ~ -1 + 
-    daily_inf*suscept_norm + 
-    (daily_inf*suscept_norm | county_fip)
-)
-
-get_prior(ff, abt_final %>% filter(state_code == "NC"))
-
-mm <- brm(
-  ff, 
-  data = abt_final %>% filter(state_code == "NC"), 
-  prior = c(
-    prior(normal(0, 1), coef = "daily_inf"),
-    prior(normal(0, 1), coef = "daily_inf:suscept_norm")
-  ), 
-  chains = 4,
-  cores = 4
-)
 ```
