@@ -55,7 +55,7 @@ def call_device (
     return device
 
 def model_exec(
-            model,
+            model, device,
             data_loader, # X,y,z
             data_loader_val,
             health_weight,
@@ -69,7 +69,7 @@ def model_exec(
 
     
     optimiser = torch.optim.SGD(model.parameters(), lr=learning_rate, weight_decay=l2_lambda)
-    model
+    model.to(device)
     model.train()
 
     for e in range(num_epochs):
@@ -78,9 +78,9 @@ def model_exec(
 
         for i, (x, y, z) in enumerate(data_loader):
             
-            x = x.float()
-            y = y.float()
-            z = z.float()
+            x = x.float().to(device)
+            y = y.float().to(device)
+            z = z.float().to(device)
             
             outputs = model(x)
             
@@ -112,7 +112,7 @@ def model_exec(
             loss_tot += loss.item()
             
             val_loss = val_part(
-                                model,
+                                model, device,
                                 data_loader_val,
                                 health_weight,
                                 econ_weight,
@@ -137,7 +137,7 @@ def model_exec(
     return coeffs_
 
 def val_part(
-        model,
+        model, device,
         data_loader, # X,y,z
         health_weight,
         econ_weight,
@@ -145,8 +145,8 @@ def val_part(
         path_weights,
         verbose=True):
 
-    model
-#     if save_model: model.load_state_dict(torch.load(path_weights))
+    model = model.to(device)
+    # if save_model: model.load_state_dict(torch.load(path_weights))
     model.eval()
     
     with torch.no_grad():
@@ -156,9 +156,9 @@ def val_part(
 
         for i, (x, y, z) in enumerate(data_loader):
             
-            x = x.float()
-            y = y.float()
-            z = z.float()
+            x = x.float().to(device)
+            y = y.float().to(device)
+            z = z.float().to(device)
             
             outputs = model(x)
 

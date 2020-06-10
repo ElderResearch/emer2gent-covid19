@@ -12,14 +12,15 @@ data_dir = Path(__file__).resolve().parents[5] / "carl_data"
 
 import sys
 # loader_path = Path(__file__).resolve().parents[2] 
-loader_path = "/Users/carl/Documents/code_repos/emer2gent-covid19/src/python/pkg/"
+loader_path = "/home/cnorman/code_repos/emer2gent-covid19/src/python/pkg/"
 sys.path.append(loader_path)
 from trent.abt import torch_data as td
 
 # calling gpu recources if available
 use_cuda_if_available = True
-parallelize_if_possible = False
+parallelize_if_possible = True
 
+device = call_device(use_cuda_if_available, parallelize_if_possible)
 
 num_features = 16
 num_loss = 2
@@ -27,11 +28,11 @@ num_loss = 2
 # dataloader decisions
 REPEAT = 2
 FOLDS = 5
-BATCH_SIZE = 32
+BATCH_SIZE = 256
 
 # create the data loader
 orchestrator = td.RepeatedStratifiedGroupKFoldOrchestrator(
-    "/Users/carl/Documents/code_repos/emer2gent-covid19/carl_data/test_abt.csv", 
+    "/home/cnorman/code_repos/emer2gent-covid19/carl_data/test_abt.csv", 
     repeats=REPEAT, 
     folds=FOLDS, 
     batch_size=BATCH_SIZE
@@ -58,7 +59,7 @@ def execute():
         for tr, te in repeat:
     #         X, y, z = next(iter(tr))
             coeffs_ = model_exec(
-                                model,
+                                model, device,
                                 tr, # X,y,z
                                 te,
                                 health_weight,
