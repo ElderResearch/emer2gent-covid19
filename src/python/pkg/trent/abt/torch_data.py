@@ -109,7 +109,7 @@ class _StratifiedGroupKFoldOrchestrator:
     def _make_dataset(self, folds: Iterable[int]) -> "_ABTDataset":
         """Make a dataset from a subsetted data frame."""
         sub = self.data.loc[self.data["__fold"].isin(folds), :]
-        return _ABTDataset(data=sub)
+        return _ABTDataset(data=sub.copy())
 
 
 class _ABTDataset(Dataset):
@@ -130,23 +130,19 @@ class _ABTDataset(Dataset):
                 (X, y, weight) triples
         """
         # NB: simple imputation for infection_momentum
-        self.data = data.copy()
-        self.data.infection_momentum.loc[self.data.infection_momentum.isna()] = 1
+        self.data = data
+        self.data.loc[self.data.infection_momentum.isna(), "infection_momentum"] = 1
 
-    def __len__(self):
-        """Length is the number of rows in the data."""
-        return self.data.shape[0]
-
-    def __getitem__(self, i) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Produce 3-tuples of features, responses, and weights."""
-        z = 1 / torch.sqrt(torch.tensor(self.data.iloc[i, :]["acs_pop_total"]))
-        y = torch.tensor(
-            self.data.iloc[i, :][
-                ["infection_target", "unemployment_target"]
-            ].values.astype(float)
+        # Pre-allocate tensors
+        self.zmat = 1 / torch.sqrt(
+            torch.tensor(self.data["acs_pop_total"].values, dtype=torch.float32)
         )
-        x = torch.tensor(
-            self.data.iloc[i, :][
+        self.ymat = torch.tensor(
+            self.data[["infection_target", "unemployment_target"]].values.astype(float),
+            dtype=torch.float32,
+        )
+        self.xmat = torch.tensor(
+            self.data[
                 [
                     "travel_limit",
                     "stay_home",
@@ -165,6 +161,14 @@ class _ABTDataset(Dataset):
                     "infection_momentum",
                     "unemployment_rate",
                 ]
-            ].values.astype(float)
+            ].values.astype(float),
+            dtype=torch.float32,
         )
-        return (x, y, z)
+
+    def __len__(self):
+        """Length is the number of rows in the data."""
+        return self.data.shape[0]
+
+    def __getitem__(self, i) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Produce 3-tuples of features, responses, and weights."""
+        return (self.xmat[i], self.ymat[i], self.zmat[i])
