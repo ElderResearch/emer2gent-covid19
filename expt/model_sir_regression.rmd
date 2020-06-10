@@ -119,7 +119,11 @@ Fit simple linear regressions at various levels to convince myself this is worth
 ```{r}
 # Simple, SIR-based fit
 simple_lm_fit <- function(data) {
-  lm(daily_inf_target ~ daily_inf + daily_inf:suscept_norm, data = data, weights = data$pop)
+  lm(
+    daily_inf_target ~ daily_inf + daily_inf:suscept_norm, 
+    data = data, 
+    weights = data$pop
+  )
 }
 
 # Add some potential confounders
@@ -143,7 +147,8 @@ lm_all_global <- abt_master %>%
   summarize(model = list(simple_lm_fit(.))) %>% 
   extract_lm(model, which = "coef")
 
-lm_all_global
+lm_all_global %>% 
+  knitr::kable()
 
 # R0 = beta / gamma
 lm_all_global[[3, 3]] / (1 - lm_all_global[[2, 3]])
@@ -156,7 +161,8 @@ lm_all_global_confound <- abt_master %>%
   summarize(model = list(less_simple_lm_fit(.))) %>% 
   extract_lm(model, which = "coef")
 
-lm_all_global_confound
+lm_all_global_confound %>% 
+  knitr::kable()
 
 # R0 = beta / gamma
 lm_all_global_confound[[15, 3]] / (1 - lm_all_global[[2, 3]])
