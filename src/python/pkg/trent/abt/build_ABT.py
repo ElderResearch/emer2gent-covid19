@@ -140,8 +140,6 @@ def join_all_data():
    
     # drop proxy_fip & state fips & county fips
     del ABT_V3["proxy_fip"]
-    del ABT_V3["state_fips"]
-    del ABT_V3["county_fips"]
     del ABT_V3["Unnamed: 0"]
     
     print("Added Census data:")
@@ -236,7 +234,7 @@ if __name__ == "__main__":
     ABT_final = join_all_data()
    
     # Export Data
-    check_directory = os.path.abspath("data/processed")
+    check_directory = os.path.abspath("data/intermediate")
     if not os.path.exists(check_directory):
         os.makedirs(check_directory)
 
