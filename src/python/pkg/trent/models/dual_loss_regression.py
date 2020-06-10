@@ -2,7 +2,6 @@
 import torch
 import torch.nn as nn
 
-
 class Dual_Loss_Regression(nn.Module):
     def __init__(self, num_features, num_loss):
 
@@ -61,12 +60,13 @@ def model_exec(
     l2_lambda,
     save_model,
     path_weights,
-    verbose=True,
+    verbose=False,
 ):
     optimiser = torch.optim.SGD(
         model.parameters(), lr=learning_rate, weight_decay=l2_lambda
     )
     model.to(device)
+
     model.train()
 
     for e in range(num_epochs):
@@ -74,6 +74,10 @@ def model_exec(
         loss_tot = 0
 
         for i, (x, y, z) in enumerate(data_loader):
+
+            if torch.isnan(x).sum() > 0: print(f'x has nan')
+            if torch.isnan(y).sum() > 0: print(f'y has nan')
+            if torch.isnan(z).sum() > 0: print(f'z has nan')
 
             x = x.to(device)
             y = y.to(device)
@@ -108,27 +112,33 @@ def model_exec(
 
             loss_tot += loss.item()
 
+        if e % 2 == 0 and verbose:
             val_loss = val_part(
-                model,
-                device,
-                data_loader_val,
-                health_weight,
-                econ_weight,
-                save_model,
-                path_weights,
-            )
-
-            if i % 1 == 0 and verbose == True:
-                print(f"Batch_loss {i}: {loss_batch}")
-
-        if e % 1 == 0 and verbose == True:
-            print(f"Epoch: {e}, Train_Loss: {loss_tot}")
+                                model,
+                                device,
+                                data_loader_val,
+                                health_weight,
+                                econ_weight,
+                                save_model,
+                                path_weights,
+                                )  
+            print(f"Epoch {e}, Train_Loss: {loss_tot}")
             print(f"Val_loss: {val_loss}")
-
-    print(f"Epoch: {e}, Train_Loss: {loss_tot}")
+          
+        
+    val_loss = val_part(
+        model,
+        device,
+        data_loader_val,
+        health_weight,
+        econ_weight,
+        save_model,
+        path_weights,
+        )  
+    print(f"Train_Loss: {loss_tot}")
     print(f"Val_loss: {val_loss}")
 
-    #     if save_model: torch.save(model.state_dict(), path_weights)
+    if save_model: torch.save(model.state_dict(), path_weights)
 
     coeffs_ = model.layer_1.weight
 
@@ -147,7 +157,6 @@ def val_part(
 ):
 
     model = model.to(device)
-    # if save_model: model.load_state_dict(torch.load(path_weights))
     model.eval()
 
     with torch.no_grad():
@@ -181,4 +190,4 @@ def val_part(
 
             loss_tot += loss.item()
 
-    return loss_tot
+        return loss_tot

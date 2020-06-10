@@ -134,9 +134,9 @@ class _ABTDataset(Dataset):
         self.data.loc[self.data.infection_momentum.isna(), "infection_momentum"] = 1
 
         # Pre-allocate tensors
-        self.zmat = 1 / torch.sqrt(
+        self.zmat = torch.sqrt(
             torch.tensor(self.data["acs_pop_total"].values, dtype=torch.float32)
-        )
+        ) / torch.sum(torch.tensor(self.data["acs_pop_total"].values), dtype=torch.float32)
         self.ymat = torch.tensor(
             self.data[["infection_target", "unemployment_target"]].values.astype(float),
             dtype=torch.float32,
@@ -160,6 +160,7 @@ class _ABTDataset(Dataset):
                     "infection_penetration",
                     "infection_momentum",
                     "unemployment_rate",
+                    "unemployment_penetration"
                 ]
             ].values.astype(float),
             dtype=torch.float32,
@@ -168,6 +169,10 @@ class _ABTDataset(Dataset):
     def __len__(self):
         """Length is the number of rows in the data."""
         return self.data.shape[0]
+
+    def __width__(self):
+        """Number of features in the data"""
+        return self.xmat.shape[1]
 
     def __getitem__(self, i) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Produce 3-tuples of features, responses, and weights."""
