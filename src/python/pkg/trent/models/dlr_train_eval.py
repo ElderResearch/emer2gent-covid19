@@ -16,8 +16,6 @@ loader_path = "/Users/carl/Documents/code_repos/emer2gent-covid19/src/python/pkg
 sys.path.append(loader_path)
 from trent.abt import torch_data as td
 
-abt = pd.read_csv(data_dir / 'ABT_C1.csv.gz', compression='gzip')
-
 # calling gpu recources if available
 use_cuda_if_available = True
 parallelize_if_possible = False
@@ -33,7 +31,7 @@ BATCH_SIZE = 32
 
 # create the data loader
 orchestrator = td.RepeatedStratifiedGroupKFoldOrchestrator(
-    "/Users/carl/Documents/code_repos/emer2gent-covid19/data/test_abt.csv", 
+    "/Users/carl/Documents/code_repos/emer2gent-covid19/carl_data/test_abt.csv", 
     repeats=REPEAT, 
     folds=FOLDS, 
     batch_size=BATCH_SIZE
