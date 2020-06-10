@@ -16,7 +16,10 @@ Overview:
 Extract Google Mobility data for US at a county level
 url: https://www.google.com/covid19/mobility/
 
-Mobility data updated weekly in global cvs. The data contains;
+Mobility data is updated weekly into a global cvs. The data contains;
+- country_region_code
+- country_region
+- date
 - sub_region_1
 - sub_region_2
 - country_region_code
@@ -27,9 +30,14 @@ Mobility data updated weekly in global cvs. The data contains;
 - workplaces_percent_change_from_baseline
 - residential_percent_change_from_baseline
 
-We will filter for US & add the Federal Information Processing
-Standards (FIPS) on a county level
-- FIPS mapping can be found @ data/fips.csv from repo. root
+The script will filter down to US only mobility data 
+Further more it join the Federal Information Processing (fip) 
+at a state & county level.
+
+Note: 
+This script depends on the data/fips.csv being scraped 
+Run script from the root of the Repo. 
+
 """
 
 
@@ -38,7 +46,7 @@ Standards (FIPS) on a county level
 
 def get_google_mobility():
     """
-    Download Google's global mobility data
+    Download Google's global mobility data directly from URL 
     """
     url = "https://www.gstatic.com/covid19/mobility/Global_Mobility_Report.csv"
     logging.info("Downloading Google mobility data")
@@ -64,8 +72,8 @@ if __name__ == "__main__":
         US_mobility_df = mobility_raw[mobility_raw.country_region == "United States"]
         US_mobility_df.reset_index(inplace=True, drop=True)
 
-        # Columns renamed for consistency across tables unique identifying keys
-        # Drop "percent_change_from_baseline" suffix for more compact representation
+        # Columns renamed for consistency across tables
+        # Drop "percent_change_from_baseline" suffix for more compact representation in ABT
         US_mobility_df.rename(
             inplace=True,
             columns={
@@ -81,17 +89,16 @@ if __name__ == "__main__":
             },
         )
 
-        # District of Columbia can be assumed as a county -> replace missing county
-        # entry with 'state' name
+        # District of Columbia we assume to be a county
         US_mobility_df.loc[
             US_mobility_df.state == "District of Columbia", "county"
         ] = "District of Columbia"
 
-        # Drop Columns that are redundent
+        # Drop Columns that are constant over all timestamps 
         del US_mobility_df["country"]
         del US_mobility_df["country_region"]
 
-        # Import and join fips.csv to US_mobility -> this is one of our unique keys
+        # Import and join fips.csv to US_mobility
         # fips.csv exists in data folder created by src/python/init_project.py
         fips_file = data_dir / "fips.csv"
         fips_df = pd.read_csv(fips_file)

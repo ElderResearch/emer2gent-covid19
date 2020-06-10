@@ -3,16 +3,25 @@ import pandas as pd
 import os
 
 """ 
+
 Overview:
-Join all the ASC data into one table 
-dump into intermediate data folder 
-this helps neaten up the construction of the ABT 
+
+Join all the ASC data into one table: 
+- Polulation data
+- Income data
+- Race data
+- Age, demographics & gender data 
+
+Note: 
+data is written to the intermediate data once joined.
+
 """
 
 
 # ------- Functions --------#
+
 def join_asc_pair(DF_1, DF_2):
-    # Join two ASC data frame by state_fips and county_fips (inner) as the match perfectly
+    # Join two ASC data frame by state_fips and county_fips (inner) as they match 
 
     JOIN_df = pd.merge(
         DF_1,
