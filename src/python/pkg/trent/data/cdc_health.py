@@ -5,10 +5,10 @@ from datetime import timedelta
 import logging
 
 from pathlib import Path
-data_dir = Path(__file__).resolve().parents[5] / "carl_data"
+data_dir = Path(__file__).resolve().parents[5] / "data"
 
 def get_cdc_data() -> pd.DataFrame:
-    """Source CDC infection and death data from S3 bucket
+    """Source CDC infection and death data from data folder
     url = https://usafacts.org/visualizations/coronavirus-covid-19-spread-map/
     """
 
