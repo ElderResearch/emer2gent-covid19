@@ -3,33 +3,24 @@ import pandas as pd
 import numpy as np
 from datetime import timedelta
 import logging
-import boto3
-from botocore.exceptions import ClientError
 
+from pathlib import Path
+data_dir = Path(__file__).resolve().parents[5] / "carl_data"
 
 def get_cdc_data() -> pd.DataFrame:
     """Source CDC infection and death data from S3 bucket
-    [include link to S3 bucket]
+    url = https://usafacts.org/visualizations/coronavirus-covid-19-spread-map/
     """
 
-    bucket = 
     infection_file_name = "covid_confirmed_usafacts.csv"
+    infection_file_path = data_dir / infection_file_name
+    
     death_file_name = "covid_deaths_usafacts.csv"
-
-
-    # Read in the file:
-    s3 = boto3.client('s3')
-
-    try:
-        obj_infection = s3.get_object(Bucket=bucket, Key=infection_file_name)
-        obj_death = s3.get_object(Bucket=bucket, Key=death_file_name)
-    except ClientError as e:
-        logging.error(e)
-        return False
+    death_file_path = data_dir / death_file_name
 
     # Read objects into pandas df
-    infection_df = pd.read_csv(obj_infection['Body'])
-    death_df = pd.read_csv(obj_death['Body'])
+    infection_df = pd.read_csv(infection_file_path)
+    death_df = pd.read_csv(death_file_path)
     
     return infection_df, death_df
 
@@ -65,3 +56,6 @@ def cdc_data_transformation() -> pd.DataFrame:
     final_df.sort_values(by=['stateFIPS','countyFIPS','date'])
 
     return  final_df
+
+if __name__ == "__main__":
+    df = cdc_data_transformation()

@@ -139,7 +139,7 @@ class _ABTDataset(Dataset):
 
     def __getitem__(self, i) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Produce 3-tuples of features, responses, and weights."""
-        z = torch.tensor(self.data.iloc[i, :]["acs_pop_total"])
+        z = 1 / torch.sqrt(torch.tensor(self.data.iloc[i, :]["acs_pop_total"]))
         y = torch.tensor(
             self.data.iloc[i, :][
                 ["infection_target", "unemployment_target"]
@@ -156,7 +156,6 @@ class _ABTDataset(Dataset):
                     "phase_3",
                     "tmpf_mean",
                     "relh_mean",
-                    "acs_pop_total",
                     "male_proportion",
                     "Percentage_white",
                     "young_age",
