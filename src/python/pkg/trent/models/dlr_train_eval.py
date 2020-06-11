@@ -13,14 +13,13 @@ from trent.models.dual_loss_regression import (
 
 torch.manual_seed(0)
 
-# loader_path = ""
+# paths for packages
 loader_path = Path(__file__).resolve().parents[2]
-# loader_path = "/home/cnorman/code_repos/emer2gent-covid19/src/python/pkg/"
 sys.path.append(loader_path)
 
 # calling gpu recources if available
 use_cuda_if_available = True
-parallelize_if_possible = True
+parallelize_if_possible = False
 device = call_device(use_cuda_if_available, parallelize_if_possible)
 
 # dataloader decisions
@@ -51,28 +50,29 @@ def weights_init(m):
         m.bias.data.fill_(0.01)
 
 # Training decisions
-learning_rate = 1e-3
+learning_rate = 1e-2
 num_epochs = 10
 
 health_weight = 1
 econ_weight = 1
-l2_lambda = 0.001
+l2_lambda = 0.000001
 
-save_model = True
-
-# path to save checkpoints to
-path_weights = Path(
-    "/Users/carl/Documents/code_repos",
-    "emer2gent-covid19/carl/model_weights/torch_weights.pth",
-)
+save_model = False
 
 
 def execute():
+
     repeat_dict = {}
-    for i, repeat in enumerate(orchestrator):
+    for i, repeat in enumerate(orchestrator): # each repetition of cv
         fold_dict = {}
-        for k, (tr, te) in enumerate(repeat):
+        for k, (tr, te) in enumerate(repeat): # each fold within a cv iteration
             print(f'Repeat: {i}, Fold: {k}')
+            run_iter = f'rpt_{i}_fold_{k}'
+            # path to save checkpoints to
+            path_weights = Path(
+                "/Users/carl/Documents/code_repos",
+                f"emer2gent-covid19/carl/model_weights/torch_weights_{run_iter}.pth",
+            )
             model.apply(weights_init)
             coeffs_ = model_exec(
                 model,

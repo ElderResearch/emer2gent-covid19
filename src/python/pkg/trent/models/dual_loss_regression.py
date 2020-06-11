@@ -67,13 +67,15 @@ def model_exec(
     )
     model.to(device)
 
-    model.train()
-
     for e in range(num_epochs):
 
         loss_tot = 0
 
         for i, (x, y, z) in enumerate(data_loader):
+
+            model.train()
+            model.zero_grad()
+            optimiser.zero_grad()
 
             if torch.isnan(x).sum() > 0: print(f'x has nan')
             if torch.isnan(y).sum() > 0: print(f'y has nan')
@@ -102,10 +104,7 @@ def model_exec(
             # Sum all loss functions for final result
             loss = health_weight * health_loss + econ_weight * econ_loss
 
-            optimiser.zero_grad()
-
             loss.backward()
-
             optimiser.step()
 
             loss_batch = loss.item()
@@ -140,9 +139,9 @@ def model_exec(
 
     if save_model: torch.save(model.state_dict(), path_weights)
 
-    coeffs_ = model.layer_1.weight
+    coeffs_run = model.layer_1.weight.clone()
 
-    return coeffs_
+    return coeffs_run
 
 
 def val_part(
@@ -159,35 +158,33 @@ def val_part(
     model = model.to(device)
     model.eval()
 
-    with torch.no_grad():
+    loss_tot = 0
 
-        loss_tot = 0
+    for i, (x, y, z) in enumerate(data_loader):
 
-        for i, (x, y, z) in enumerate(data_loader):
+        x = x.to(device)
+        y = y.to(device)
+        z = z.to(device)
 
-            x = x.to(device)
-            y = y.to(device)
-            z = z.to(device)
+        outputs = model(x)
 
-            outputs = model(x)
+        health_pred = outputs[:, 0]
+        econ_pred = outputs[:, 1]
 
-            health_pred = outputs[:, 0]
-            econ_pred = outputs[:, 1]
+        health_targ = y[:, 0]
+        econ_targ = y[:, 1]
 
-            health_targ = y[:, 0]
-            econ_targ = y[:, 1]
+        loss_func = nn.MSELoss(reduction="none")
 
-            loss_func = nn.MSELoss(reduction="none")
+        health_loss = loss_func(health_pred, health_targ) * z
+        health_loss = health_loss.sum()
 
-            health_loss = loss_func(health_pred, health_targ) * z
-            health_loss = health_loss.sum()
+        econ_loss = loss_func(econ_pred, econ_targ) * z
+        econ_loss = econ_loss.sum()
 
-            econ_loss = loss_func(econ_pred, econ_targ) * z
-            econ_loss = econ_loss.sum()
+        # Sum all loss functions for final result
+        loss = health_weight * health_loss + econ_weight * econ_loss
 
-            # Sum all loss functions for final result
-            loss = health_weight * health_loss + econ_weight * econ_loss
+        loss_tot += loss.item()
 
-            loss_tot += loss.item()
-
-        return loss_tot
+    return loss_tot

@@ -4,14 +4,9 @@ from typing import Generator, Iterable, Tuple
 
 import numpy as np
 import pandas as pd
+import random
 import torch
 from torch.utils.data import DataLoader, Dataset
-
-# Fix randomness in the model
-torch.manual_seed(0)
-np.random.seed(0)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
 
 class RepeatedStratifiedGroupKFoldOrchestrator:
     """Orchestrate repeated, stratified, group-wise, K-fold CV.
@@ -37,7 +32,7 @@ class RepeatedStratifiedGroupKFoldOrchestrator:
     """
 
     def __init__(
-        self, srcfile: str, folds: int = 5, repeats: int = 1, batch_size: int = 1
+        self, srcfile: str, folds: int = 5, repeats: int = 1, batch_size: int = 1, seed: int = 0
     ):
         """Initialize the orchestrator.
 
@@ -52,12 +47,19 @@ class RepeatedStratifiedGroupKFoldOrchestrator:
         self.folds = folds
         self.repeats = repeats
         self.batch_size = batch_size
+        self.seed = seed
 
     def __iter__(self) -> Generator["_StratifiedGroupKFoldOrchestrator", None, None]:
         """Shuffle the dataset and produce a CV orchestrator."""
+
+        torch.manual_seed(self.seed)
+        np.random.seed(self.seed)
+        random.seed(self.seed)
+        random_states = random.sample(range(1000),self.repeats)
+
         for i in range(self.repeats):
             yield _StratifiedGroupKFoldOrchestrator(
-                data=self.data.sample(frac=1, random_state=i).copy(),
+                data=self.data.sample(frac=1, random_state=random_states[i]).copy(),
                 folds=self.folds,
                 batch_size=self.batch_size
             )
@@ -147,7 +149,9 @@ class _ABTDataset(Dataset):
         # Pre-allocate tensors
         self.zmat = torch.sqrt(
             torch.tensor(self.data["acs_pop_total"].values, dtype=torch.float32)
-        ) / torch.sum(torch.tensor(self.data["acs_pop_total"].values), dtype=torch.float32)
+            ) / torch.sqrt(
+            torch.sum(torch.tensor(self.data["acs_pop_total"].values), dtype=torch.float32)
+            )
         self.ymat = torch.tensor(
             self.data[["infection_target", "unemployment_target"]].values.astype(float),
             dtype=torch.float32,
