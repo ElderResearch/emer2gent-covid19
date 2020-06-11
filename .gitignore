@@ -246,3 +246,9 @@ docs/
 
 # generated for personal nbstripout use
 .gitattributes
+
+# LaTeX
+*.aux
+*.fdb_latexmk
+*.fls
+*.synctex.gz
