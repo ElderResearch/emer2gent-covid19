@@ -9,3 +9,6 @@
 library/
 python/
 staging/
+
+# notebook stuff
+*.html

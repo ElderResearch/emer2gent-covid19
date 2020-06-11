@@ -1,0 +1,425 @@
+---
+title: "ABT Refine"
+author: "Carlos Blancarte"
+date: "Created: 2020-06-07, Updated: `r Sys.Date()`"
+output: html_notebook
+---
+
+```{r setup, echo=FALSE}
+r_root <- rprojroot::find_rstudio_root_file()
+knitr::opts_knit$set(root.dir = file.path(r_root))
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, dpi=100)
+knitr::opts_chunk$set(fig.width=7, fig.height=5)
+ggplot2::theme_set(ggplot2::theme_minimal())
+```
+
+```{r, lib-load}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(forcats)
+  library(fs)
+  library(ggplot2)
+  library(glue)
+  library(lubridate)
+  library(purrr)
+  library(readr)
+  library(stringr)
+  library(tibble)
+  library(tidyr)
+  library(zoo)
+})
+```
+
+# Load Data
+```{r}
+# determine absolute path to the overall **project** data directory
+proj_data_path <- path_abs(path("..", "..", "..", 'data'))
+d <- read.csv(list.files(proj_data_path, pattern='ABT', full.names=TRUE))
+
+d <- as_tibble(d) %>%
+  mutate(date = as.Date(date)) %>%
+  mutate(across(where(is.factor), as.character)) %>% 
+  arrange(state, county, date)
+
+# clean up names
+names(d) <- gsub('\\.', '_', tolower(names(d)))
+d <- d %>% rename(
+  cov_pos_tests = cov_positive,
+  cov_neg_tests = cov_negative,
+  cov_in_hosp = cov_hospitalizedcurrently,
+  cov_total_pos = cov_total,
+  cov_total_tests = cov_totaltestresults
+)
+```
+
+# Convenience Functions
+```{r}
+correct_negative_it <- function(col) {
+  # ex: c(1, 4, 6, 9, 2, 12, 15) # fix the 2
+    new_col <- c(col)
+    # Iterate backwards to index 2 (leave 1 out for caluclating difference)
+    for (i in seq(length(new_col), 2, -1)) {
+        it <- new_col[i] - new_col[i - 1]
+        if (it >= 0) next
+        # Make it go to zero by fixing the last record
+        new_col[i - 1] <- new_col[i - 1] + it
+    }
+    new_col
+}
+```
+
+---
+
+# Sanity Check
+
+We know there are some issues with the reporting of cumulative confirmed 
+cases - namely, a few counties mysteriously report _less_ cases than a
+previous date.  
+
+These will be corrected by replacing the errant value with the last known
+value.
+```{r}
+d %>% 
+  arrange(state, county, date) %>% 
+  group_by(state, county) %>% 
+  filter(max(confirmed) != confirmed[max(row_number())]) %>% 
+  qplot(date, confirmed, data = .) +
+  facet_wrap(~ state + county, scales = 'free_y') + 
+  ggtitle("Cumulative Cases with No Adjustment")
+
+d %>% 
+  arrange(state, county, date) %>% 
+  group_by(state, county) %>% 
+  filter(max(confirmed) != confirmed[max(row_number())]) %>% 
+  mutate(confirmed2 = correct_negative_it(confirmed)) %>%
+  qplot(date, confirmed2, data = .) +
+  facet_wrap(~ state + county, scales = 'free_y') + 
+  ggtitle("Cumulative Cases with Adjustment")
+```
+
+## Total Confirmed Infections
+
+Confirm the total number of confirmed covid cases in the US (at least, according
+to the data we've collected). As of June 6 we should be near the 2million mark
+```{r}
+d %>% 
+  group_by(state, county) %>% 
+  mutate(confirmed = correct_negative_it(confirmed)) %>%
+  filter(row_number() == max(row_number())) %>% 
+  ungroup() %>% 
+  summarise(as_of=max(date), total_confirmed=scales::comma(sum(confirmed)))
+
+```
+
+## Number of Counties with No Confirmed Cases and Deaths
+
+We expect a percentage of counties to have reported zero cases. This turns out
+to be a case with approx 5% of all counties.  
+```{r}
+group_by(d, state, county) %>% 
+  summarise(has_cases = max(confirmed) > 0,
+            has_deaths = max(deaths) > 0,
+            .groups='drop') %>% 
+  group_by(has_cases, has_deaths) %>% 
+  summarise(count = n(), .groups='drop') %>% 
+  mutate(percent = scales::percent(count/sum(count)))
+```
+
+---
+
+# Processing
+
+## Policy
+
+The primary area of interest in estimating the impact of lifting restrictions
+on the infection rate. Create a feature that maps the time that each county
+spent without lock-down orders, with lock-down orders, and phased reopening.
+
+```{r}
+# Correct cumulative counts
+dd <- d %>% 
+  group_by(state, county) %>% 
+  mutate(across(c(confirmed, deaths), ~ correct_negative_it(.x))) %>%
+  ungroup()
+
+policy_cols <- c('stay_home', 'phase_1', 'phase_2', 'phase_3')
+policy_labels <- c('none_issued', 'stay_home', 'phase_1', 'phase_2', 'phase_3') 
+
+policies <- select(dd, state, county, county_fip, all_of(policy_cols)) %>% 
+  mutate(across(all_of(policy_cols), ~ gsub('None Issued', 'none_issued', .x))) %>%
+  mutate(across(all_of(policy_cols[-1]), ~ ifelse(.x=='1' & stay_home=='none_issued', NA, .x))) %>% 
+  mutate(across(all_of(policy_cols), ~ na_if(.x, '0'))) %>%
+  imap_dfc(~ if (.y %in% policy_cols) ifelse(.x == '1', .y, .x) else .x) %>% 
+  mutate(policy = coalesce(phase_1, phase_2, phase_3, stay_home)) %>% 
+  group_by(state, county) %>%
+  fill(policy, .direction = 'down') %>%
+  ungroup() %>%
+  mutate(policy = replace_na(policy, 'none_issued')) %>% 
+  mutate(policy = as.factor(policy)) %>%
+  mutate(policy = fct_relevel(policy, policy_labels))
+
+
+# Add the policy column
+dd <- mutate(dd, policy = policies$policy)
+# select(d, state, county, date, matches('stay|phase'), policy)
+
+# Sanity Check
+policy_check <- dd %>%
+  group_by(state, county, county_fip, policy) %>% 
+  summarise(start=min(date), stop=max(date), .groups='drop') %>%
+  group_by(state, county, county_fip) %>%
+  mutate(order = row_number(), diff_days = start - lag(stop)) %>%
+  ungroup()
+
+# The maximum number of days between policy changes should not exceed 1.
+# Otherwise this means we have gaps between policy implementations
+stopifnot(max(policy_check$diff_days, na.rm=T)==1)
+
+# Plot Examples
+ex_counties <- c(4013, 49035, 36061, 46099, 2013, 12011)
+filter(dd, county_fip %in% ex_counties) %>% 
+  ggplot(data=., aes(x=date, y=confirmed)) +
+  geom_line() + 
+  facet_wrap(~ state + county, nrow=length(ex_counties), scales='free_y') +
+  scale_fill_viridis_d() +
+  ylab('Cumulative Number of Infections') +
+  ggtitle('Example of Policy Implementation Over Time') +
+  geom_rect(
+    data = filter(policy_check, county_fip %in% ex_counties),
+    aes(xmin=start, xmax=stop, ymin=-Inf, ymax=Inf, fill=policy), alpha=0.25, 
+    inherit.aes=FALSE
+  )
+
+plot_w_policy <- function(df, y=NULL) {
+  stopifnot(inherits(df, 'data.frame')); stopifnot(nrow(df) > 0)
+  target <- rlang::sym(y)
+  ggplot(data=df, aes(x=date, y=!!target)) +
+  geom_line() + 
+  facet_wrap(~ state + county, nrow=length(ex_counties), scales='free_y') +
+  scale_fill_viridis_d() +
+  ylab(y) +
+  geom_rect(
+    data = filter(policy_check, county_fip %in% unique(df$county_fip)),
+    aes(xmin=start, xmax=stop, ymin=-Inf, ymax=Inf, fill=policy), alpha=0.25, 
+    inherit.aes=FALSE
+  )
+}
+```
+
+---
+
+## Infections
+
+Count the number of _new_ infections over a seven-day period
+
+```{r warning=F}
+# Change of Pace
+dd <- dd %>%
+  group_by(state, county) %>%
+  mutate(
+    confirmed = correct_negative_it(confirmed),
+    confirmed_cum = confirmed,
+    confirmed_cum_lag_7 = lag(confirmed_cum, 7),
+    target = (confirmed_cum - confirmed_cum_lag_7),
+    target_per_capita = target/acs_pop_total
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(confirmed_cum_lag_7))
+
+```
+
+### What Does our Target Capture? 
+
+In effect, it is capturing the growing (or shrinking) rate of new cases over
+the number of cases from the previous week.
+```{r}
+filter(dd, county_fip %in%  c(36061, 4013)) %>% 
+  select(date, state, county, county_fip, acs_pop_total, target, confirmed_cum) %>%
+  mutate(pop = round(acs_pop_total/1e6, digits = 2)) %>%
+  mutate(id = sprintf('%s: %s (%sM)', state, county, pop)) %>%
+  gather(k, v, target, confirmed_cum) %>% 
+  ggplot(data=., aes(x=date, y=v)) + 
+  geom_line() + 
+  facet_wrap(id ~ k, scales='free_y')
+```
+
+### Target Across All States + Counties
+Notice the clear number of extreme cases throughout.  
+We see what looks like a clear peak in April. _Note_: These figures **are not**
+scaled in any way.
+```{r}
+
+dd %>% 
+  mutate(grp_id = paste(state, county)) %>%
+  ggplot(data=., aes(x=date, y=target, group=grp_id)) + 
+  ggtitle('State and County Confirmed Cases', 
+          'Count of New Infections Relative to Previous Week') +
+  geom_line(alpha=0.35)
+
+```
+
+
+## Mobility 
+
+Since all tracking data is based on a baseline (equal to 0 for that day of the
+week) we will assume that locations we cannot interpolate (due to their small 
+population size) will have behaved 'as usual'. Although, it's not always the
+case. There are a few counties with upwards of 800k people (namely, San
+Francisco county). There isn't really much we can do about that.  
+
+The mobility data has two types of missing values:  
+  1. sometimes, a particular day might be removed to ensure anonymity. These
+     values can be interpolated  
+  2. other times, an entire region can be omitted. These are trickier. We can
+     either assume a baseline of 0 or impute values based on day of the week
+     to preserve weekly seasonality  
+
+```{r}
+mobility_cols <- c(
+  'retail_and_recreation', 'grocery_and_pharmacy', 'parks',
+  'transit_stations', 'workplaces', 'residential'
+)
+
+# Missing Values
+select(dd, all_of(mobility_cols)) %>%
+  map_dbl(~ mean(is.na(.x))) %>%
+  enframe('col', 'pct_na')
+
+split(dd, dd$state) %>%
+  map_dfr(.id='state', function(df) {
+      select(df, all_of(mobility_cols)) %>%
+      map_dbl(~ mean(is.na(.x))) %>%
+      enframe('col', 'pct_na')}) %>% 
+  ggplot(data=., aes(x=col, y=state, fill=pct_na)) + 
+  geom_tile() + 
+  scale_fill_viridis_c() + 
+  ggtitle("Percentage of Missing Values in Mobility Cols by State")
+
+set.seed(42)
+mobility_samps <- sample(unique(dd$county_fip), 6)
+filter(dd, county_fip %in% mobility_samps) %>%
+  gather(k, v, all_of(mobility_cols)) %>%
+  mutate(pop_m = round(acs_pop_total/1e6, digits=2)) %>%
+  mutate(id = sprintf('%s: %s\n[%sM]', state, county, pop_m)) %>%
+  ggplot(data=., aes(x=date, y=v, color=k)) + 
+    geom_line() + 
+    ggtitle('Mobility Data for 6 Counties w/o Imputation') +
+    facet_wrap(~ id, scales = 'free_y' )
+
+# dplyr::across is nice but it's SLOW compared to mutate_at
+dd <- dd %>% 
+  mutate(time_dow = factor(wday(date, label=TRUE), ordered=FALSE)) %>%
+  mutate(time_wk_yr = week(date)) %>%
+  group_by(state, county) %>% 
+  mutate_at(vars(all_of(mobility_cols)), ~ na.approx(.x, na.rm=F, maxgap=7)) %>%
+  ungroup() %>%
+  group_by(county, time_wk_yr, time_dow) %>%
+  mutate_at(vars(all_of(mobility_cols)), ~ replace_na(.x, median(.x, na.rm=T))) %>%
+  ungroup() %>%
+  group_by(state, time_wk_yr, time_dow) %>%
+  mutate_at(vars(all_of(mobility_cols)), ~ replace_na(.x, median(.x, na.rm=T))) %>%
+  ungroup() %>%
+  group_by(time_wk_yr, time_dow) %>%
+  mutate_at(vars(all_of(mobility_cols)), ~ replace_na(.x, median(.x, na.rm=T))) %>%
+  ungroup(time_wk_yr) %>%
+  mutate_at(vars(all_of(mobility_cols)), ~ replace_na(.x, median(.x, na.rm=T))) %>%
+  ungroup(time_dow) %>%
+  mutate_at(vars(all_of(mobility_cols)), ~ replace_na(.x, median(.x, na.rm=T)))
+  
+dd %>%
+  filter(county_fip %in% mobility_samps) %>%
+  gather(k, v, all_of(mobility_cols)) %>%
+  mutate(pop_m = round(acs_pop_total/1e6, digits=2)) %>%
+  mutate(id = sprintf('%s: %s\n[%sM]', state, county, pop_m)) %>%
+  ggplot(data=., aes(x=date, y=v, color=k)) + 
+    geom_line() + 
+    facet_wrap(~ id, scales = 'free_y' ) + 
+    ggtitle('Mobility Data for 6 Counties with Imputation')
+  
+dd <- mutate(dd, across(mobility_cols, ~ .x/100))
+```
+
+In addition to the imputation methods listed above these values will also be
+scaled by a factor of 100. 
+
+## Demographics
+
+Four categories of demographics have been collected - age, gender, race,
+and income. Broadly speaking, we have pretty good coverage for all
+categories with the exception of income. Hence, we will focus on
+race and age, taking the proportion of each group within a county.  
+
+Rather than using the raw counts we will divide by the population
+in order to get the percentage of people falling in each bucket.
+```{r}
+acs_cols <- names(dd)[grepl('acs', names(dd))]
+acs_age_cols <- acs_cols[grepl('age', acs_cols)]
+acs_gender_cols <- acs_cols[grepl('gender_(?!total)', acs_cols, perl=T)]
+acs_race_cols <- acs_cols[grepl('race_(?!total)', acs_cols, perl=T)]
+
+select(dd, all_of(acs_cols)) %>%
+  map_dbl(~ mean(is.na(.x))) %>%
+  enframe('col', 'pct_na') %>%
+  arrange(desc(pct_na))
+
+acs_cols <- c(acs_age_cols, acs_gender_cols, acs_race_cols)
+dd <- dd %>% 
+  mutate(across(all_of(acs_cols), ~ .x/acs_pop_total)) %>%
+  rowwise() %>%
+  mutate(
+    acs_age_05_17 = sum(c_across(acs_age_05_09:acs_age_15_17)), 
+    acs_age_18_29 = sum(c_across(acs_age_18_19:acs_age_25_29)), 
+    acs_age_30_49 = sum(c_across(acs_age_30_34:acs_age_45_49)), 
+    acs_age_50_64 = sum(c_across(acs_age_50_54:acs_age_62_64)), 
+    acs_age_gt_65 = sum(c_across(acs_age_65_66:acs_age_85_up)), 
+    ) %>%
+  ungroup()
+
+demo_cols <- c('acs_age_lt_05', 'acs_age_05_17', 'acs_age_18_29',
+               'acs_age_30_49', 'acs_age_50_64', 'acs_age_gt_65')
+
+```
+
+## Weather
+```{r}
+weather_cols <- c('tmpf_mean', 'dwpf_mean', 'relh_mean')
+
+select(dd, all_of(weather_cols)) %>%
+    map_dbl(~ mean(is.na(.x))) %>%
+    enframe('col', 'pct_na') %>%
+    arrange(desc(pct_na))
+
+dd <- dd %>% 
+  group_by(state, county, time_wk_yr, time_dow) %>% 
+  mutate_at(vars(all_of(weather_cols)), ~ replace_na(.x, median(.x, na.rm=TRUE))) %>%
+  ungroup() %>%
+  group_by(state, time_wk_yr) %>% 
+  mutate_at(vars(all_of(weather_cols)), ~ replace_na(.x, median(.x, na.rm=TRUE))) %>%
+  ungroup()
+
+```
+
+
+## Economy/Employment
+
+Use the daily number of unemployment claims
+
+```{r}
+econ_cols <- c('labor_force', 'unemployed', 'county_daily_unemployment_change',
+               'county_daily_interp_total_claims')
+
+select(dd, all_of(econ_cols)) %>%
+    map_dbl(~ mean(is.na(.x))) %>%
+    enframe('col', 'pct_na') %>%
+    arrange(desc(pct_na))
+
+dd <- dd %>% 
+  mutate(scaled_county_daily_claims = county_daily_interp_total_claims / acs_pop_total)
+
+```
+# Write Results
+
+```{r}
+readr::write_csv(dd, 'data/abt_prepped.csv')
+```
+
