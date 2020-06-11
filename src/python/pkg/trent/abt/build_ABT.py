@@ -38,6 +38,16 @@ def join_all_data():
     Policy_state_df = Policy_df[Policy_df.county.isna()]
     Policy_county_df = Policy_df[~Policy_df.county.isna()]
 
+    # checks to CDC data 
+    # ADD a check to scrip: 
+    county_names_with_policy = Policy_county_df.county.unique()
+    county_names_in_cdc = CDC_df.county.unique()
+
+    # Check if any of the policy names are not in the CDC!
+    not_in_cdc = [k for k in county_names_with_policy if k not in county_names_in_cdc]
+    print(f"County in Policy but not in CDC:\n {not_in_cdc}")
+    # This is getting droped becasue of the left Join 
+
     # Furthermore, split the CDC wrt the fips county code that exisit in policy data 
     county_fip_with_policy = Policy_county_df.county_fip.unique()
     CDC_df_0 = CDC_df[
@@ -59,15 +69,17 @@ def join_all_data():
         suffixes=("", "_dropMe"),
     )
 
+    print(f"ABT_SUB_0.shape = {ABT_sub_0.shape}")
+
     ABT_sub_0.drop(
         ABT_sub_0.filter(regex="_dropMe$").columns.tolist(), axis=1, inplace=True
     )
 
-    # Inner join on CDC_df_1 to add county level policy data 
+    # left join on CDC_df_1 to add county level policy data 
     ABT_sub_1 = pd.merge(
         CDC_df_1,
         Policy_county_df,
-        how="inner",
+        how="left",
         left_on=["county_fip", "date"],
         right_on=["county_fip", "date"],
         suffixes=("", "_dropMe"),
@@ -75,7 +87,7 @@ def join_all_data():
     ABT_sub_1.drop(
         ABT_sub_1.filter(regex="_dropMe$").columns.tolist(), axis=1, inplace=True
     )
-
+    print(f"ABT_SUB_1.shape = {ABT_sub_1.shape}")
     # Concat. row-wise to get version 0 of the ABT -> [CDC,policy ]
     ABT_V0 = pd.concat([ABT_sub_0, ABT_sub_1], ignore_index=True)
     print("Added Policy data:")
@@ -163,8 +175,26 @@ def join_all_data():
     print("Added Unemployment data:")
     print(f"ABT.shape ={ABT_V4.shape}")
 
-    return ABT_V4
+     # -------------------------------------------------------------------------------
+    
+    # STEP 5 : Add Tracking data 
+    # Ensure columns have the same data type 
+    ABT_V4["date"] = pd.to_datetime(ABT_V4["date"].apply(str)).dt.date
+    
+    # Left join on state_fip and date in ABT_V4 to cov_fips and cov_date in tracking df 
+    ABT_V5 = pd.merge(ABT_V4 ,tracking_df, 
+                      how = "left" , 
+                      left_on = ["state_fip","date"] , 
+                      right_on = ["cov_fips","cov_date"],
+                      suffixes=('', '_dropMe')
+                     )
+    
+    ABT_V5.drop(ABT_V5.filter(regex='_dropMe$').columns.tolist(),axis=1, inplace=True)
+    ABT_V5.drop(["cov_date","cov_fips"],axis = 1, inplace=True ) 
 
+    print("Added Testing data:")
+    print(f"ABT.shape ={ABT_V5.shape}")
+    return ABT_V5
 
 # ------- Helper Functions ------- #
 # county_fip is composed of state fips & county fips 
@@ -229,6 +259,25 @@ if __name__ == "__main__":
     )
     # Drop State Code -> already exists as state_code
     del DoL_df["State Code"]
+
+
+    # Import tracking data: 
+    tracking_df = pd.read_csv('/Users/aiguestuser/Repositories/emer2gent-covid19/data/covidtracking.csv')
+    print(f"tracking_df.shape ={tracking_df.shape}")
+    tracking_df.columns = [f"cov_{k}" for k in tracking_df.columns]
+    tracking_df["cov_date"] = pd.to_datetime(tracking_df["cov_date"].apply(str)).dt.date
+    
+    keep = [
+    "cov_date",
+    "cov_fips",
+    "cov_positive", 
+    'cov_negative' ,
+    "cov_hospitalizedCurrently",
+    "cov_total" ,
+    "cov_totalTestResults"
+    ]
+    # filter keep columns from  tracking data : 
+    tracking_df = tracking_df.loc[:,tracking_df.columns.isin(keep)] 
 
     # Get ABT
     ABT_final = join_all_data()

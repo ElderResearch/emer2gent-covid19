@@ -239,4 +239,16 @@ vignettes/*.pdf
 docs/
 
 # generated html
-expt/*.html
+**/*.html
+
+# PDFs
+**/*.pdf
+
+# generated for personal nbstripout use
+.gitattributes
+
+# LaTeX
+*.aux
+*.fdb_latexmk
+*.fls
+*.synctex.gz

@@ -69,7 +69,7 @@ CDC_confirmed = CDC_confirmed[
     ~(CDC_confirmed["county"] == "New York City Unallocated/Probable")
 ]
 
-# Further edge cases that are removed using the same reasoning above 
+# Further edge cases that are removed using the same reasoning above (Alaska)
 CDC_deaths = CDC_deaths[~(CDC_deaths.county == "Wade Hampton Census Area")]
 CDC_confirmed = CDC_confirmed[~(CDC_confirmed.county == "Wade Hampton Census Area")]
 
