@@ -77,8 +77,8 @@ No missing values:
 ```{r, echo = F}
 abt_master %>% 
   summarize(across(.fn = ~ sum(is.na(.)))) %>% 
-  gather(column, na_values) %>% 
-  knitr::kable()
+  pivot_longer(everything()) %>% 
+  filter(value > 0)
 ```
 
 Correlations:
@@ -129,12 +129,16 @@ simple_lm_fit <- function(data) {
 # Add some potential confounders
 less_simple_lm_fit <- function(data) {
   lm(daily_inf_target ~ 
-       daily_inf + daily_inf:suscept_norm
-     + median_inc + minority_frac + tmpf_mean + relh_mean
+       daily_inf + daily_inf:suscept_norm 
+     + cov_tests_tot_1wk + cov_tests_pos_1wk
+     + median_inc + minority_pct + tmpf_mean + relh_mean
+     + age_le_24_pct + age_25_34_pct + age_35_44_pct + age_45_54_pct 
+     + age_55_64_pct + age_65_74_pct + age_75_84_pct + age_85_ge_pct 
      + mobility_transit_stations + mobility_retail_and_recreation 
      + mobility_grocery_and_pharmacy + mobility_parks
      + mobility_workplaces + mobility_residential
-     + phase_1_active + phase_1_ever, data = data, weights=data$pop)
+     + phase_1_ever
+     + phase_2_ever, data = data, weights=data$pop)
 }
 ```
 
@@ -151,7 +155,13 @@ lm_all_global %>%
   knitr::kable()
 
 # R0 = beta / gamma
-lm_all_global[[3, 3]] / (1 - lm_all_global[[2, 3]])
+lm_all_global %>% 
+  summarize(
+    beta = estimate[term == "daily_inf:suscept_norm"], 
+    gamma = 1 - estimate[term == "daily_inf"], 
+    r0 = beta / gamma
+  ) %>% 
+  arrange(-r0)
 ```
 
 The confounder model is plausible (not changing R0 by much). And I've done no feature selection, no scaling, etc.
@@ -165,7 +175,13 @@ lm_all_global_confound %>%
   knitr::kable()
 
 # R0 = beta / gamma
-lm_all_global_confound[[15, 3]] / (1 - lm_all_global[[2, 3]])
+lm_all_global_confound %>% 
+  summarize(
+    beta = estimate[term == "daily_inf:suscept_norm"], 
+    gamma = 1 - estimate[term == "daily_inf"], 
+    r0 = beta / gamma
+  ) %>% 
+  arrange(-r0)
 ```
 
 Let's try a more physically interesting model.
@@ -173,19 +189,29 @@ Let's try a more physically interesting model.
 ```{r}
 lm_fit_3 <- function(data) {
   lm(daily_inf_target ~ daily_inf + daily_inf:suscept_norm
-     + daily_inf:suscept_norm:phase_1_active
+     + daily_inf:suscept_norm:phase_1_ever
+     + daily_inf:suscept_norm:phase_2_ever
+     + daily_inf:suscept_norm:age_75_84_pct
      + daily_inf:suscept_norm:mobility_transit_stations
-     + daily_inf:suscept_norm:minority_frac
-     + daily_inf:phase_1_active
+     + daily_inf:suscept_norm:minority_pct
+     + daily_inf:phase_1_ever
+     + daily_inf:phase_2_ever
      + daily_inf:mobility_transit_stations
-     + daily_inf:minority_frac
-     + median_inc + minority_frac + tmpf_mean + relh_mean
+     + daily_inf:minority_pct + 
+     + daily_inf:age_75_84_pct
+     + cov_tests_tot_1wk + cov_tests_pos_1wk
+     + median_inc + minority_pct + tmpf_mean + relh_mean
      + mobility_transit_stations + mobility_retail_and_recreation 
      + mobility_grocery_and_pharmacy + mobility_parks
-     + mobility_workplaces + mobility_residential
-     + phase_1_active + phase_1_ever, data = data, weights = data$pop)
+     + mobility_workplaces + mobility_residential +
+     + age_le_24_pct + age_25_34_pct + age_35_44_pct + age_45_54_pct 
+     + age_55_64_pct + age_65_74_pct + age_75_84_pct + age_85_ge_pct 
+     + phase_1_ever + phase_2_ever, data = data, weights = data$pop)
 }
 ```
+
+I don't like this result b/c it drive $\beta$ and $\gamma$ crazy.
+Needs more thought.
 
 ```{r}
 lm_all_global_confound_3 <- abt_master %>% 
@@ -221,11 +247,12 @@ lm_all_state %>%
   knitr::kable()
 
 # One wonders what drives the issues with beta and gamma.
-# That we get decent R0 values suggests it's a measurment issue for I(t) ?
+# That we get decent R0 values suggests it's a measurement issue for I(t) ?
 lm_all_state %>% 
   group_by(state_code) %>% 
   summarize(beta = estimate[3], gamma = 1 - estimate[2], r0 = beta / gamma) %>% 
-  arrange(-r0)
+  arrange(-r0) %>%
+  knitr::kable()
 ```
 
 Again, with confounders: still OK.
@@ -250,7 +277,8 @@ lm_all_state_confound %>%
     gamma = 1 - estimate[term == "daily_inf"], 
     r0 = beta / gamma
   ) %>% 
-  arrange(-r0)
+  arrange(-r0) %>%
+  knitr::kable()
 ```
 
 ### State model with smoothing
@@ -378,11 +406,11 @@ mm <- lme4::lmer(
     + daily_inf + daily_inf:suscept_norm
     # + daily_inf:suscept_norm:phase_1_active
      # + daily_inf:suscept_norm:mobility_transit_stations
-     # + daily_inf:suscept_norm:minority_frac
+     # + daily_inf:suscept_norm:minority_pct
      # + daily_inf:phase_1_active
      # + daily_inf:mobility_transit_stations
-     # + daily_inf:minority_frac
-     + median_inc + minority_frac + tmpf_mean + relh_mean
+     # + daily_inf:minority_pct
+     + median_inc + minority_pct + tmpf_mean + relh_mean
      + mobility_transit_stations + mobility_retail_and_recreation 
      + mobility_grocery_and_pharmacy + mobility_parks
      + mobility_workplaces + mobility_residential
