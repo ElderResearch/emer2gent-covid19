@@ -67,6 +67,7 @@ if __name__ == "__main__":
     data_dir = Path(__file__).resolve().parents[5] / "data"
     mobility_file = data_dir / "intermediate" / "US_mobility_data.csv"
     if not mobility_file.exists():
+        print("getting data")
         logging.info(f"{mobility_file} does not exist.")
         mobility_raw = get_google_mobility()
         US_mobility_df = mobility_raw[mobility_raw.country_region == "United States"]

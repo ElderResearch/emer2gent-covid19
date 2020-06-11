@@ -136,25 +136,50 @@ def state_policy_abt(state_idx, state_level, Policy_df, CDC_df):
 
     # STEP3: Repeat the same steps but for the the following column pairs: 
     # The folwing columns can be treated as state & end dates for phase 1,2 & 3 
-    col_name_pairs = [
-        ["all_non-ess_business_start_date", "phase_1_reopen_date"],
-        ["any_business_start_date", "phase_2_reopen_date"],
-        ["any_gathering_restrict_start_date", "phase_3_reopen_end_date"],
-    ]
+   # PHASE 1 ; 
+    date = state_df.date
+    P1_reopen = Policy_df.loc[state_idx,"phase_1_reopen_date"];print( f"P1 = {P1_reopen}")
+    P2_reopen = Policy_df.loc[state_idx,"phase_2_reopen_date"];print( f"P2 = {P2_reopen}")
+    P3_reopen = Policy_df.loc[state_idx,"phase_3_reopen_end_date"]; print( f"P2 = {P3_reopen}")
+    
+    # ----------------------------------    
+    # PHASE 1: 
+    if P1_reopen == "None Issued":
+        # Phase one never started -> always 0 
+        state_df["phase_1"] = 0 
+    else: 
+        
+        if P2_reopen == "None Issued":
+            # Phase 1 never ended 
+            state_df["phase_1"] = (date >= P1_reopen)*1
+            
+        else: 
+            # Phase 1 ended ie. phase 2 started 
+            bool_vals = (date >= P1_reopen) & (date < P2_reopen)
+            state_df["phase_1"] = bool_vals*1
 
-    # Same-steps as before: 
-    for i, k in enumerate(col_name_pairs):
+    # ----------------------------------    
+    # PHASE 2: 
+    if P2_reopen == "None Issued":
+        # Phase 2 never started
+        state_df["phase_2"] = 0
+    else: 
+        
+        if P3_reopen == "None Issued":
+            # Phase 2 never ended 
+            state_df["phase_2"] = (date >= P2_reopen)*1
+        else: 
+            # Phase 2 ended ie. phase 3 started 
+            bool_vals = (date >= P2_reopen) & (date < P3_reopen)
+            state_df["phase_2"] = bool_vals*1
+    # ----------------------------------    
 
-        col_start = k[0]
-        col_end = k[1]
-
-        start_date = Policy_df.loc[state_idx, col_start]
-        end_date = Policy_df.loc[state_idx, col_end]
-
-        # Phase_i columns naming conventions for i=1,2,3
-        new_col_name = f"phase_{i+1}"
-        new_col = get_policy_col(start_date, end_date, date=state_df.date)
-        state_df[new_col_name] = new_col
+    # Phase 3: 
+    if P3_reopen == "None Issued":
+        # Phase 3 never started
+        state_df["phase_3"] = 0
+    else: 
+        state_df["phase_3"] = (date >= P3_reopen)*1
 
     return state_df
 
@@ -208,6 +233,7 @@ if __name__ == "__main__":
     fips_abs_path = os.path.abspath("data/fips.csv")
     fips_df = pd.read_csv(fips_abs_path)
 
+
     # Get Policy ABT
     Policy_ABT = get_policy_ABT(Policy_df=Policy_df, CDC_df=CDC_df)
 
@@ -233,6 +259,13 @@ if __name__ == "__main__":
         "phase_3",
     ]
     Policy_ABT = Policy_ABT.loc[:, new_column_order]
+    # Sort out policy naming convetions:
+    # County names dont inclue the county sufix like in all other data sources: 
+    # And a CDC naming convetions update 
+    Policy_ABT.loc[~Policy_ABT.county.isna(),"county"] += " County"
+    Policy_ABT.loc[Policy_ABT.county == "Alexandria County","county"] = "Alexandria city"
+
+
 
     # Export: Check that intermediate directory folder exisits O.W create
     check_directory = os.path.abspath("data/intermediate")
