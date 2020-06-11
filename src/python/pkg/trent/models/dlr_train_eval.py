@@ -88,7 +88,7 @@ def execute():
                 path_weights
             )
 
-            fold_dict[k] = coeffs_.numpy()
+            fold_dict[k] = coeffs_.detach().numpy()
         
         repeat_dict[i] = fold_dict
 

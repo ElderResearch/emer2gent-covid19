@@ -7,6 +7,11 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+# Fix randomness in the model
+torch.manual_seed(0)
+np.random.seed(0)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 class RepeatedStratifiedGroupKFoldOrchestrator:
     """Orchestrate repeated, stratified, group-wise, K-fold CV.
@@ -52,9 +57,9 @@ class RepeatedStratifiedGroupKFoldOrchestrator:
         """Shuffle the dataset and produce a CV orchestrator."""
         for i in range(self.repeats):
             yield _StratifiedGroupKFoldOrchestrator(
-                data=self.data.sample(frac=1).copy(),
+                data=self.data.sample(frac=1, random_state=i).copy(),
                 folds=self.folds,
-                batch_size=self.batch_size,
+                batch_size=self.batch_size
             )
 
 
@@ -94,6 +99,12 @@ class _StratifiedGroupKFoldOrchestrator:
         self.data = data.merge(lookup, on=["county_fip", "state_code"])
         assert self.data.shape[0] == data.shape[0]
 
+    def __worker_init_fn__():
+        torch_seed = torch.initial_seed()
+        np_seed = torch_seed // 2**32-1
+        random.seed(torch_seed)
+        np.random.seed(np_seed)
+
     def __iter__(self) -> Generator[Tuple[DataLoader, DataLoader], None, None]:
         """Yield train and test loaders over the fold splits."""
         for ifold in range(1, 1 + self.folds):
@@ -102,8 +113,8 @@ class _StratifiedGroupKFoldOrchestrator:
             train_ds = self._make_dataset(folds=train_folds)
             test_ds = self._make_dataset(folds=[ifold])
             yield (
-                DataLoader(train_ds, batch_size=self.batch_size),
-                DataLoader(test_ds, batch_size=self.batch_size),
+                DataLoader(train_ds, batch_size=self.batch_size, worker_init_fn=self.__worker_init_fn__),
+                DataLoader(test_ds, batch_size=self.batch_size, worker_init_fn=self.__worker_init_fn__),
             )
 
     def _make_dataset(self, folds: Iterable[int]) -> "_ABTDataset":
