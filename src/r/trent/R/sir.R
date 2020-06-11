@@ -23,17 +23,21 @@ group_arrange_abt <- function(tbl) {
 
 #' Create a clean ABT from raw sources
 fetch_abt <- function(src) {
+  EXPECTED_ROWS <- 436738L
+
   message("Reading CSV")
   abt <- suppressMessages(read_csv(src, guess_max = 3.5e5))
-  assert_that(nrow(abt) == 424170)
+  assert_that(nrow(abt) == EXPECTED_ROWS)
 
   # Fix the cumulative counts
+  message("Fixing cumulative infections")
   abt <- abt %>%
     group_arrange_abt() %>%
     mutate(
       old_ = confirmed,
       confirmed = correct_negative_infections(old_)
-    ) %>%
+    ) %T>%
+    {message(glue("Changed {sum(.$old_ != .$confirmed)} records"))} %>%
     ungroup() %>%
     select(-old_)
 
@@ -48,6 +52,7 @@ fetch_abt <- function(src) {
       acs_median_hh_inc_total,
       acs_race_white,
       starts_with("acs_age_"),
+      cov_total, cov_positive,
       tmpf_mean, relh_mean,
       retail_and_recreation, grocery_and_pharmacy, parks,
       transit_stations, workplaces, residential
@@ -99,7 +104,7 @@ fetch_abt <- function(src) {
     }) %>%
     ungroup()
 
-  assert_that(nrow(abt) == 424170)
+  assert_that(nrow(abt) == EXPECTED_ROWS)
   assert_that(sum(is.na(abt$acs_median_hh_inc_total)) == 0)
 
   # Compute a simple minority representation metric
@@ -157,7 +162,7 @@ fetch_abt <- function(src) {
     }) %>%
     ungroup()
 
-  assert_that(nrow(abt) == 424170)
+  assert_that(nrow(abt) == EXPECTED_ROWS)
   assert_that(sum(is.na(abt$tmpf_mean)) == 0)
   assert_that(sum(is.na(abt$relh_mean)) == 0)
 
@@ -182,8 +187,16 @@ fetch_abt <- function(src) {
     })) %>%
     ungroup()
 
-  assert_that(sum(is.na(abt)) == 0)
+  # Fill missing testing data with zeros and convert to "tests in last week
+  abt <- abt %>%
+    mutate(
+      cov_tests_tot_1wk = cov_total - lag(cov_total, 7),
+      cov_tests_pos_1wk = cov_positive - lag(cov_positive, 7)
+    ) %>%
+    select(-cov_total, -cov_positive) %>%
+    mutate(across(c(cov_tests_tot_1wk, cov_tests_pos_1wk), replace_na, 0))
 
+  assert_that(sum(is.na(abt)) == 0)
   return(final_transform(abt))
 }
 
@@ -219,6 +232,9 @@ final_transform <- function(data) {
       suscept_norm = 1 - cuml_inf / pop,
       daily_inf = confirmed - lag(confirmed),
       daily_inf_target = lead(daily_inf),
+      # Testing
+      cov_tests_tot_1wk,
+      cov_tests_pos_1wk,
       # Policies
       phase_1_active,
       phase_1_ever,
@@ -229,15 +245,15 @@ final_transform <- function(data) {
       relh_mean,
       # Demography
       median_inc = acs_median_hh_inc_total,
-      minority_frac = acs_race_f_minority,
-      age_le_24_frac = acs_f_age_le_24,
-      age_25_34_frac = acs_f_age_25_34,
-      age_35_44_frac = acs_f_age_35_44,
-      age_45_54_frac = acs_f_age_45_54,
-      age_55_64_frac = acs_f_age_55_64,
-      age_65_74_frac = acs_f_age_65_74,
-      age_75_84_frac = acs_f_age_75_84,
-      age_85_ge_frac = acs_f_age_85_ge,
+      minority_pct = 100 * acs_race_f_minority,
+      age_le_24_pct = 100 * acs_f_age_le_24,
+      age_25_34_pct = 100 * acs_f_age_25_34,
+      age_35_44_pct = 100 * acs_f_age_35_44,
+      age_45_54_pct = 100 * acs_f_age_45_54,
+      age_55_64_pct = 100 * acs_f_age_55_64,
+      age_65_74_pct = 100 * acs_f_age_65_74,
+      age_75_84_pct = 100 * acs_f_age_75_84,
+      age_85_ge_pct = 100 * acs_f_age_85_ge,
       # Behavior
       mobility_retail_and_recreation = retail_and_recreation,
       mobility_grocery_and_pharmacy = grocery_and_pharmacy,
