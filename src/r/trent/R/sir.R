@@ -25,7 +25,7 @@ group_arrange_abt <- function(tbl) {
 fetch_abt <- function(src) {
   message("Reading CSV")
   abt <- suppressMessages(read_csv(src, guess_max = 3.5e5))
-  assert_that(nrow(abt) == 436738)
+  assert_that(nrow(abt) == 424170)
 
   # Fix the cumulative counts
   abt <- abt %>%
@@ -37,14 +37,17 @@ fetch_abt <- function(src) {
     ungroup() %>%
     select(-old_)
 
+  # Add count checks?
+
   # Key columns
   abt <- abt %>%
     select(
       state_code, county_fip, date,
       acs_pop_total, confirmed,
-      phase_1,
+      phase_1, phase_2,
       acs_median_hh_inc_total,
       acs_race_white,
+      starts_with("acs_age_"),
       tmpf_mean, relh_mean,
       retail_and_recreation, grocery_and_pharmacy, parks,
       transit_stations, workplaces, residential
@@ -62,6 +65,18 @@ fetch_abt <- function(src) {
       )) %>%
     ungroup() %>%
     select(-phase_1)
+
+  message("Recoding Phase 2")
+  abt <- abt %>%
+    group_arrange_abt() %>%
+    mutate(
+      phase_2_active = as.integer(phase_2 == 1),
+      phase_2_ever = suppressWarnings(as.integer(
+        any(phase_2_active) &
+        date >= min(date[phase_2_active == 1]))
+      )) %>%
+    ungroup() %>%
+    select(-phase_2)
 
   # Missing median incomes are replaced with pop-weighted medians
   message("Imputing median incomes")
@@ -84,11 +99,31 @@ fetch_abt <- function(src) {
     }) %>%
     ungroup()
 
-  assert_that(nrow(abt) == 436738)
+  assert_that(nrow(abt) == 424170)
   assert_that(sum(is.na(abt$acs_median_hh_inc_total)) == 0)
 
+  # Compute a simple minority representation metric
   abt <- abt %>%
     mutate(acs_race_f_minority = 1 - acs_race_white / acs_pop_total)
+
+  # Bin ages according to how CDC does it
+  # https://www.cdc.gov/nchs/nvss/vsrr/covid_weekly/index.htm#AgeAndSex
+  abt <- abt %>%
+    mutate(
+      acs_f_age_le_24 = (
+        acs_age_lt_05 + acs_age_05_09 + acs_age_10_14 + acs_age_15_17 +
+        acs_age_18_19 + acs_age_20 + acs_age_21 + acs_age_22_24
+      ),
+      acs_f_age_25_34 = acs_age_25_29 + acs_age_30_34,
+      acs_f_age_35_44 = acs_age_35_39 + acs_age_40_44,
+      acs_f_age_45_54 = acs_age_45_49 + acs_age_50_54,
+      acs_f_age_55_64 = acs_age_55_59 + acs_age_60_61 + acs_age_62_64,
+      acs_f_age_65_74 = acs_age_65_66 + acs_age_67_69 + acs_age_70_74,
+      acs_f_age_75_84 = acs_age_75_79 + acs_age_80_84,
+      acs_f_age_85_ge = acs_age_85_up
+    ) %>%
+    mutate(across(starts_with("acs_f_age"), ~ . / acs_pop_total)) %>%
+    select(-starts_with("acs_age"))
 
   # Fill weather NAs by county, then by state
   message("Imputing weather")
@@ -122,7 +157,7 @@ fetch_abt <- function(src) {
     }) %>%
     ungroup()
 
-  assert_that(nrow(abt) == 436738)
+  assert_that(nrow(abt) == 424170)
   assert_that(sum(is.na(abt$tmpf_mean)) == 0)
   assert_that(sum(is.na(abt$relh_mean)) == 0)
 
@@ -178,17 +213,32 @@ final_transform <- function(data) {
     transmute(
       state_code,
       date,
+      # SIR
       pop = acs_pop_total,
       cuml_inf = confirmed,
       suscept_norm = 1 - cuml_inf / pop,
       daily_inf = confirmed - lag(confirmed),
       daily_inf_target = lead(daily_inf),
+      # Policies
       phase_1_active,
       phase_1_ever,
-      median_inc = acs_median_hh_inc_total,
-      minority_frac = acs_race_f_minority,
+      phase_2_active,
+      phase_2_ever,
+      # Weather
       tmpf_mean,
       relh_mean,
+      # Demography
+      median_inc = acs_median_hh_inc_total,
+      minority_frac = acs_race_f_minority,
+      age_le_24_frac = acs_f_age_le_24,
+      age_25_34_frac = acs_f_age_25_34,
+      age_35_44_frac = acs_f_age_35_44,
+      age_45_54_frac = acs_f_age_45_54,
+      age_55_64_frac = acs_f_age_55_64,
+      age_65_74_frac = acs_f_age_65_74,
+      age_75_84_frac = acs_f_age_75_84,
+      age_85_ge_frac = acs_f_age_85_ge,
+      # Behavior
       mobility_retail_and_recreation = retail_and_recreation,
       mobility_grocery_and_pharmacy = grocery_and_pharmacy,
       mobility_parks = parks,
