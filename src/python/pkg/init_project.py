@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 
 import io
-import sys
 import tarfile
 from pathlib import Path
 
 import requests
 
-sys.path.append("trent")
 from trent.data import run_pipeline
 
-VERSION_ID = "ubTsPxn.gyi2RgyAtE9SrmpbGarnKzWK"
+VERSION_ID = "fyCJDCYRV.B1_tVo4BRNNAUmVA44ELug"
 
 
 def download_data():
@@ -29,4 +27,5 @@ def download_data():
 
 
 if __name__ == "__main__":
-    run_pipeline()
+    # run_pipeline()
+    download_data()
