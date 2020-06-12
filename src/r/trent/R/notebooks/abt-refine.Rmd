@@ -173,8 +173,8 @@ spent without lock-down orders, with lock-down orders, and phased reopening.
 policy_cols <- c('stay_home', 'phase_1', 'phase_2', 'phase_3')
 policy_labels <- c('none_issued', 'stay_home', 'phase_1', 'phase_2', 'phase_3') 
 
-policies <- select(dd, state, county, county_fip, all_of(policy_cols)) %>% 
-  mutate(across(all_of(policy_cols), ~ gsub('None Issued', 'none_issued', .x))) %T>%
+policies <- select(dd, state, county, county_fip, date, all_of(policy_cols)) %>% 
+  mutate(across(all_of(policy_cols), ~ gsub('None Issued', 'none_issued', .x))) %>%
   mutate(across(all_of(policy_cols[-1]), ~ ifelse(.x=='1' & stay_home=='none_issued', NA, .x))) %>% 
   mutate(across(all_of(policy_cols), ~ na_if(.x, '0'))) %>%
   imap_dfc(~ if (.y %in% policy_cols) {if_else(.x == '1', .y, .x)} else {.x}) %>% 
@@ -184,11 +184,12 @@ policies <- select(dd, state, county, county_fip, all_of(policy_cols)) %>%
   ungroup() %>%
   mutate(policy = replace_na(policy, 'none_issued')) %>% 
   mutate(policy = as.factor(policy)) %>%
-  mutate(policy = fct_relevel(policy, policy_labels))
+  mutate(policy = fct_relevel(policy, policy_labels)) %>%
+  select(-state, -county, -stay_home:-phase_3)
 
 
 # Add the policy column
-dd <- mutate(dd, policy = policies$policy)
+dd <- inner_join(dd, policies, by=c('county_fip', 'date'))
 # select(d, state, county, date, matches('stay|phase'), policy)
 
 # Sanity Check
