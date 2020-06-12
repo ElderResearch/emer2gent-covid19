@@ -566,9 +566,90 @@ select(dd, all_of(econ_cols)) %>%
     arrange(desc(pct_na))
 ```
 
+Where are the missing values?
+They are always towards the end of the series.
+
+```{r}
+dd %>% 
+  select(state_code, county_fip, date, all_of(econ_cols)) %>% 
+  pivot_longer(cols = -c(state_code:date)) %>% 
+  group_by(state_code, county_fip, name) %>% 
+  summarize(
+    min_dt = min(date),
+    max_ok = suppressWarnings(max(date[!is.na(value)])),
+    min_na = min(date[is.na(value)]),
+    max_na = max(date[is.na(value)]),
+    max_dt = max(date),
+    .groups = "drop"
+  ) %>% 
+  filter(min_na < max_ok) %>% 
+  nrow()
+```
+
+Forward-impute NAs at the county level. There's a single HI county with no labor data,
+so we impute that at the daily level as the mean labor force per day 
+in the rest of the state.
+
+```{r}
+# Standard imputation
+dd <- dd %>% 
+  group_by(state, county) %>% 
+  arrange(state, county, date) %>% 
+  fill(labor_force, .direction = "down") %>% 
+  fill(unemployed, .direction = "down") %>% 
+  ungroup() %>% 
+  select(-county_daily_unemployment_change, -county_daily_interp_total_claims)
+
+# Per-day imputation at the state level
+econ_impute <- dd %>% 
+  select(state, date, acs_pop_total, labor_force, unemployed) %>% 
+  na.omit() %>% 
+  group_by(state, date) %>% 
+  summarize(
+    across(c(acs_pop_total, labor_force, unemployed), sum), 
+    .groups = "drop"
+  ) %>% 
+  # NB: this is a statewide fraction, we need to convert it to a total count next
+  transmute(
+    state, date,
+    labor_force_impute = labor_force / acs_pop_total,
+    unemployed_impute = unemployed / acs_pop_total
+  ) %>% 
+  ungroup()
+
+nrow_chk_ <- nrow(dd)
+dd <- dd %>% 
+  left_join(econ_impute, by = c("state", "date")) %>% 
+  # Imputation * county pop = imputed value
+  mutate(
+    labor_force = if_else(
+      is.na(labor_force), 
+      acs_pop_total * labor_force_impute, 
+      labor_force
+    ),
+    unemployed = if_else(
+      is.na(unemployed), 
+      acs_pop_total * unemployed_impute, 
+      unemployed
+    )
+  ) %>% 
+  select(-unemployed_impute, -labor_force_impute)
+```
+
+Finally, normalize to the county population:
+
 ```{r}
 dd <- dd %>% 
-  mutate(scaled_county_daily_claims = county_daily_interp_total_claims / acs_pop_total)
+  mutate(across(c(labor_force, unemployed), ~ . / acs_pop_total))
+```
+
+
+```{r}
+stopifnot(sum(is.na(dd$labor_force)) == 0)
+stopifnot(sum(is.na(dd$unemployed)) == 0)
+stopifnot(nrow(dd) == nrow_chk_)
+# NB: labor force can apparently be bigger than 1 in the _original_ data
+stopifnot(all(dd$unemployed <= 1))
 ```
 
 ---
