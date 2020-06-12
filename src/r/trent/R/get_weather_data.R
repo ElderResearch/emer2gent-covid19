@@ -111,6 +111,7 @@ geocode_fips <- function(google_api_key=NULL) {
   flog.info('Geocoding %s counties', length(search_terms))
   coords <- map2_dfr(search_terms, seq_along(search_terms), function(term, i) {
     flog.info('Geocoding %s of %s', i, length(search_terms))
+    Sys.sleep(0.5)
     suppressMessages(geocode(term, output='more', override_limit=TRUE))
   })
   fips <- bind_cols(fips, coords)
