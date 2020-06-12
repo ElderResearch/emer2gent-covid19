@@ -245,7 +245,24 @@ plot_w_policy <- function(df, y = NULL) {
 
 ## Infections
 
-Count the number of _new_ infections over a seven-day period
+Count the number of _new_ infections over a seven-day period (`target`) in
+addition to:  
+
+  - `confirmed_new_cases`: New reported infected cases  
+  - `confirmed_new_cases_7day_sum`: New reported cases using a trailing 7 day
+     sum  
+  - `confirmed_new_cases_7day_sum_lead7`: Leading indicator; number of new
+     cases (trailing 7 day sum) in the next 7 days  
+  - `confirmed_new_cases_7day_sum_lag7`: Lagging indicator; number of new
+     cases (trailing 7 day sum) in the last 7 days  
+  - `infection_7day_pct_delta*`: Percentage change in the total number of
+     of **new** cases (trailing 7 day sum) over the next week  
+  - `infection_momentum*`: Ratio of new confirmed cases in the previous 7 days
+     and the total number of infections  
+  - `infection_penetration*`: Confirmed number of infections scaled by county
+     population  
+  
+* : a constant of `1` is added to these calculations for numerical stability
 
 ```{r warning=F}
 dd <- dd %>%
@@ -254,7 +271,14 @@ dd <- dd %>%
     confirmed_cum = confirmed,
     confirmed_cum_lag_7 = lag(confirmed_cum, 7),
     target = (confirmed_cum - confirmed_cum_lag_7),
-    target_per_capita = target / acs_pop_total
+    target_per_capita = target / acs_pop_total, 
+    confirmed_new_cases = c(NA, diff(confirmed)), 
+    confirmed_new_cases_7day_sum = rollsum(confirmed_new_cases, k=7, na.pad=T, align='right') + 1, 
+    confirmed_new_cases_7day_sum_lead7 = lead(confirmed_new_cases_7day_sum, 7),
+    confirmed_new_cases_7day_sum_lag7 = lag(confirmed_new_cases_7day_sum, 7),
+    infection_7day_pct_delta = confirmed_new_cases_7day_sum_lead7/confirmed_new_cases_7day_sum,
+    infection_momentum = confirmed_new_cases_7day_sum_lag7/(confirmed_cum + 1), 
+    infection_penetration = (confirmed_cum + 1)/acs_pop_total
   ) %>%
   ungroup() %>%
   filter(!is.na(confirmed_cum_lag_7))
@@ -331,7 +355,7 @@ The mobility data has two types of missing values:
      either assume a baseline of 0 or impute values based on day of the week
      to preserve weekly seasonality  
 
-```{r}
+```{r, mobility}
 mobility_cols <- c(
   'retail_and_recreation', 'grocery_and_pharmacy', 'parks',
   'transit_stations', 'workplaces', 'residential'
@@ -367,7 +391,7 @@ filter(dd, county_fip %in% mobility_samps) %>%
 We use cascading imputations, starting at the most granular and moving to
 the most high-level.
 
-```{r, mobility}
+```{r, mobility-impute}
 # dplyr::across is nice but it's SLOW compared to mutate_at
 dd <- dd %>% 
   mutate(time_dow = factor(wday(date, label=TRUE), ordered=FALSE)) %>%
@@ -443,7 +467,7 @@ select(dd, all_of(acs_cols)) %>%
 Make age buckets that correspond to CDC listings, e.g., 
 <https://www.cdc.gov/nchs/nvss/vsrr/covid_weekly/index.htm#AgeAndSex>
 
-```{r}
+```{r, demographics}
 dd <- dd %>%
   mutate(
     acs_age_le_24 = (
@@ -466,7 +490,7 @@ dd <- dd %>%
 
 Male and female proportions are complementary, so only keep female.
 
-```{r}
+```{r, gender}
 stopifnot(all(dd$acs_pop_total == dd$acs_gender_total))
 
 dd <- dd %>% 
@@ -496,9 +520,9 @@ dd %>%
   filter(is.na(acs_median_hh_inc_total))
 ```
 
-So, we take a population-weighted median from across the state as a quick inputation:
+So, we take a population-weighted median from across the state as a quick imputation:
 
-```{r}
+```{r household-income}
 imputed_value <- dd %>% 
   filter(state == "New Mexico") %>% 
   distinct(state, county, acs_pop_total, acs_median_hh_inc_total) %>% 
@@ -552,7 +576,7 @@ dd <- dd %>%
 
 Use the daily number of unemployment claims.
 
-```{r}
+```{r, economy}
 econ_cols <- c(
   'labor_force', 
   'unemployed', 
@@ -590,7 +614,7 @@ Forward-impute NAs at the county level. There's a single HI county with no labor
 so we impute that at the daily level as the mean labor force per day 
 in the rest of the state.
 
-```{r}
+```{r, economy-impute}
 # Standard imputation
 dd <- dd %>% 
   group_by(state, county) %>% 
@@ -640,6 +664,11 @@ Finally, normalize to the county population:
 
 ```{r}
 dd <- dd %>% 
+  group_by(state, county) %>%
+  mutate(
+    unemployment_rate = unemployed/labor_force, 
+    unemployment_penetration = lag(unemployed, 7)/unemployed) %>%
+  ungroup() %>% 
   mutate(across(c(labor_force, unemployed), ~ . / acs_pop_total))
 ```
 
