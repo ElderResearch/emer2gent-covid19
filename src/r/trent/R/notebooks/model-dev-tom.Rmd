@@ -47,6 +47,7 @@ plan(multiprocess)
 - [ ] Collapse ages
 - [ ] Select down mobility data
 - [ ] Bigger CV sample
+- [ ] Add econ data
 - [ ] Look at trajectories
 - [ ] Add deltas
 
@@ -65,11 +66,12 @@ plan(multiprocess)
 
 ```{r}
 RANDOM_SEED <- -461698
+FORCE_MODEL_RUN <- FALSE
 ```
 
 ```{r}
 run_model_vfold <- function(formula, data, ziformula = ~0) {
-  group_vfold_cv(sample_abt, group = county_fip, v = 5) %>% 
+  group_vfold_cv(data, group = county_fip, v = 5) %>% 
     future_pmap_dfr(~ {
       tr <- training(.x)
       te <- assessment(.x)
@@ -108,7 +110,8 @@ run_model_vfold <- function(formula, data, ziformula = ~0) {
         tidy = list(suppressMessages(broom.mixed:::tidy.glmmTMB(model))),
         glance = list(suppressMessages(broom.mixed:::glance.glmmTMB(model))),
         train = list(metrics_tr),
-        test = list(metrics_te)
+        test = list(metrics_te),
+        test_data = list(te)
       )
   })
 }
@@ -147,10 +150,67 @@ extract_cv_tidy <- function(cv) {
   cv %>% 
     select(id, tidy) %>% 
     unnest(tidy) %>% 
-    arrange(effect, component, group, term, id)
+    group_by(effect, component, group, term) %>% 
+    summarize(
+      estimate = mean(estimate),
+      srd.error = sqrt(sum(std.error**2))
+    )
 }
 ```
 
+```{r}
+cache_operation <- function(path, ...) {
+  if (!file.exists(path) | FORCE_MODEL_RUN) {
+    cat("Running caching operation\n")
+    saveRDS(..., path)
+    return(unlist(list(...), recursive = F))
+  } else {
+    cat("Pulling operation from cache:\n")
+    cat(glue("{path}\n"))
+    return(readRDS(path))
+  }
+}
+```
+
+```{r}
+plot_w_policy <- function(data) {
+  boxes <- data %>% 
+    group_by(state, county, policy_recoded) %>% 
+    summarize(start = min(date), end = max(date), .groups = "drop")
+  
+  data %>% 
+    select(date, state, county, target, policy_recoded, yhat) %>% 
+    pivot_longer(c(target, yhat)) %>% 
+    ggplot() + 
+    geom_rect(
+      aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf, fill = policy_recoded), 
+      data = boxes
+    ) + 
+    geom_line(aes(date, value, alpha = name, size = name)) +
+    facet_wrap(~ state + county, scales = "free") + 
+    scale_size_manual(values = c(0.5, 0.8)) + 
+    scale_alpha_manual(values = c(0.6, 1)) + 
+    scale_fill_viridis_d(alpha = 0.3)
+}
+```
+
+```{r}
+cv_extract_preds <- function(data, .per_fold = 1L) {
+  future_pmap_dfr(data, ~ {
+    model <- ..2
+    data  <- ..7
+    
+    # Sample random counties, then predict with the model
+    data %>% 
+      distinct(county_fip) %>% 
+      sample_n(.per_fold) %>% 
+      semi_join(data, ., by = "county_fip") %>%
+      mutate(
+        yhat = predict(model, ., allow.new.levels = T, type = "response")
+      )
+  })
+}
+```
 
 ---
 
@@ -255,9 +315,11 @@ keep_columns <- c(
   "mobility_transit_stations" = "transit_stations", 
   "mobility_workplaces" = "workplaces", 
   "mobility_residential" = "residential",
-  "time_days_since_inf1"
+  "time_days_since_inf1",
+  "labor_force", "unemployed"
 )
 
+# Strings to factors in certain cases
 abt_sub <- abt_v2 %>% 
   select(all_of(keep_columns)) %>% 
   mutate(across(c(where(is.character), -c(date:county)), factor))
@@ -301,27 +363,383 @@ abt_sub %>%
 
 ## Feature standardization
 
+ - Fractions -> percentages
+ - Other continuous features -> standardized
+
 ```{r}
-# Make a standardization table
+std_vars <- c(
+  "tmpf_mean", "relh_mean", 
+  "acs_pop_total", "acs_median_hh_inc_10k", 
+  "cov_pos_tests", "cov_total_tests"
+)
+
+frac_vars <- c(
+  "acs_age_le_24", "acs_age_25_34", "acs_age_35_44", 
+  "acs_age_45_54", "acs_age_55_64", "acs_age_65_74", 
+  "acs_age_75_84", "acs_age_85_ge", "acs_race_minority", 
+  "acs_gender_female",
+  "labor_force", "unemployed"
+)
+
 std_table <- abt_sub %>% 
-  select(-c(date:target)) %>% 
-  select(where(is.numeric)) %>% 
+  select(all_of(std_vars)) %>% 
   map_dfr(~ tibble(mean = mean(.x), sd = sd(.x)), .id = "feature")
 ```
 
 ```{r}
-# Apply the table
+# Apply the normalization
 abt_sub_std <- abt_sub %>% 
   mutate(across(
     all_of(std_table$feature), ~ 
       (. - std_table[std_table$feature == cur_column(), ]$mean) /
       std_table[std_table$feature == cur_column(), ]$sd
   ))
+
+# NB: models fit better as fractions
+# abt_sub_std <- abt_sub_std %>% 
+#   mutate(across(all_of(frac_vars), ~ 100 * .))
 ```
 
 ---
 
-## Data sample for development
+# Feature testing
+
+Test features using the development subset.
+
+## Boruta
+
+Run Boruta against a large random sample of 20,000 rows.
+We sample entire per-county trajectories ratehr than arbitrary random rows.
+Boruta runs permutation tests against the input features using Random 
+Forests to identify all _relevant_ features.
+
+```{r}
+save_path <- here("data/ts_boruta_sample.rds")
+
+if (!file.exists(save_path) | FORCE_MODEL_RUN) {
+  cat("Running Boruta\n")
+  
+  set.seed(RANDOM_SEED)
+  bb <- abt_sub_std %>% 
+    distinct(county_fip) %>% 
+    sample_n(275) %>% 
+    semi_join(abt_sub_std, ., by = "county_fip") %>% 
+    select(-c(date:county)) %>% 
+    Boruta::Boruta(target ~ ., data = ., maxRuns = 20, doTrace = 2)
+  
+  saveRDS(bb, save_path)
+}
+
+bb <- readRDS(save_path)
+```
+
+Boruta results:
+
+ - `time_dow` is rejected
+ - Feature importance looks different now that we start on infection "day zero"
+
+```{r}
+# Make a nicer Boruta importance history plot that lists all column names
+bb$ImpHistory %>% 
+  as_tibble(rownames = "iteration") %>% 
+  pivot_longer(-iteration, names_to = "feature", values_to = "importance") %>% 
+  filter(importance > -Inf) %>% 
+  left_join(enframe(bb$finalDecision, "feature", "decision"), by = "feature") %>% 
+  mutate(feature = fct_rev(fct_reorder(factor(feature), importance, median))) %>% 
+  ggplot(aes(feature, importance, fill = decision)) + 
+  geom_boxplot() + 
+  coord_flip() + 
+  scale_fill_discrete(na.translate = F)
+``` 
+
+---
+
+## Correlations
+
+ - Days since infection tracks week of the year, as you'd expect
+   - Outcome: Do not use week of year
+ - Age bins are quite correlated
+   - Collapse older age bins together
+   - Leave oldest bin separated (cf. nursing home outbreaks)
+   - Drop ages < 24 from analysis to prevent model fit issues
+ - Mobility is self-correlated, but at a lesser strength.
+   - Cf. Mike and consider two elements: workplace and retail
+
+```{r, fig.width=8, fig.height=8}
+correlations <- abt_sub_std %>% 
+  select(-c(date:county)) %>% 
+  select(where(is.numeric)) %>% 
+  cor()
+
+correlations %>% 
+  as_tibble(rownames = "feature1") %>% 
+  pivot_longer(-feature1, names_to = "feature2", values_to = "correlation") %>% 
+  filter(abs(correlation) > 0.6) %>% 
+  filter(feature1 < feature2) %>% 
+  arrange(-abs(correlation))
+
+corrplot::corrplot(
+  correlations, 
+  method = "color", 
+  order = "hclust", 
+  tl.col = "black", 
+  tl.cex = 0.8
+)
+```
+
+### Treat correlated features
+
+#### COVID tests
+
+Simple percentage normalization takes care of the correlation:
+
+```{r}
+abt_sub_std %>% 
+  mutate(cov_pos_tests = 100 * cov_pos_tests / cov_total_tests) %>% 
+  with(cor(cov_pos_tests, cov_total_tests))
+```
+
+Using the Boruta results, we include the most "important" features and then
+look at the impact of changing our COVID testing parameterization.
+
+```{r}
+set.seed(RANDOM_SEED)
+
+m1_ <- abt_sub_std %>% 
+  sample_n(10000) %>% 
+  glmmTMB(
+    formula = target ~ 
+      time_days_since_inf1 + 
+      acs_pop_total + acs_median_hh_inc_10k + acs_race_minority + 
+      unemployed + 
+      cov_pos_tests + cov_total_tests + 
+      (1|state_code/county_fip), 
+    data = .
+  )
+
+set.seed(RANDOM_SEED)
+
+m2_ <- abt_sub_std %>% 
+  sample_n(10000) %>% 
+  mutate(cov_pos_tests = 100 * cov_pos_tests / cov_total_tests) %>% 
+  glmmTMB(
+    formula = target ~ 
+      time_days_since_inf1 + 
+      acs_pop_total + acs_median_hh_inc_10k + acs_race_minority + 
+      unemployed + 
+      cov_pos_tests + cov_total_tests + 
+      (1|state_code/county_fip), 
+    data = .
+  )
+
+# No major difference, so OK to change.
+bind_rows(
+  glance(m1_) %>% mutate(model = "original", .before = everything()),
+  glance(m2_) %>% mutate(model = "new", .before = everything())
+)
+```
+
+Implement the change:
+
+```{r}
+abt_sub_std <- abt_sub_std %>% 
+  mutate(cov_pos_tests_frac = cov_pos_tests / cov_total_tests)
+```
+
+#### Age binning
+
+Based on the correlation analysis we should reduce the number of age bins.
+Then carry out a similar test as above.
+
+```{r}
+# This deals with r > 0.7 (dropping ages le 24, which will roll into the intercept)
+abt_sub_std %>% 
+  mutate(
+    acs_age_25_54 = acs_age_25_34 + acs_age_35_44 + acs_age_45_54,
+    acs_age_55_84 = acs_age_55_64 + acs_age_65_74 + acs_age_75_84,
+    .keep = "unused"
+  ) %>%
+  select(starts_with("acs_age")) %>% 
+  cor()
+```
+
+Test the modeling impact:
+
+```{r}
+set.seed(RANDOM_SEED)
+
+m1_ <- abt_sub_std %>% 
+  sample_n(10000) %>% 
+  glmmTMB(
+    formula = target ~ 
+      time_days_since_inf1 + 
+      acs_pop_total + acs_median_hh_inc_10k + acs_race_minority + 
+      unemployed + 
+      cov_pos_tests_frac + 
+      cov_total_tests + 
+      acs_age_25_34 + acs_age_35_44 + acs_age_45_54 + 
+      acs_age_55_64 + acs_age_65_74 + acs_age_75_84 + acs_age_85_ge +
+      (1 | state_code/county_fip), 
+    data = .
+  )
+
+set.seed(RANDOM_SEED)
+
+m2_ <- abt_sub_std %>% 
+  sample_n(10000) %>% 
+  mutate(
+    acs_age_25_54 = acs_age_25_34 + acs_age_35_44 + acs_age_45_54,
+    acs_age_55_84 = acs_age_55_64 + acs_age_65_74 + acs_age_75_84,
+    .keep = "unused"
+  ) %>% 
+  glmmTMB(
+    formula = target ~ 
+      time_days_since_inf1 + 
+      acs_pop_total + acs_median_hh_inc_10k + acs_race_minority + 
+      unemployed + 
+      cov_pos_tests_frac + cov_total_tests + 
+      acs_age_25_54 + acs_age_55_84 + acs_age_85_ge +
+      (1 | state_code/county_fip), 
+    data = .
+  )
+
+# No major difference, so OK to change.
+bind_rows(
+  glance(m1_) %>% mutate(model = "original", .before = everything()),
+  glance(m2_) %>% mutate(model = "new", .before = everything())
+)
+```
+
+Implement the change:
+
+```{r}
+abt_sub_std <- abt_sub_std %>% 
+  mutate(
+    acs_age_25_54 = acs_age_25_34 + acs_age_35_44 + acs_age_45_54,
+    acs_age_55_84 = acs_age_55_64 + acs_age_65_74 + acs_age_75_84
+  )
+```
+
+#### Mobility subsets
+
+Check the mobility correlations:
+
+```{r}
+# This agrees with Mike's notion that retail & rec and workplaces covers it
+abt_sub_std %>% 
+  select(starts_with("mobility")) %>% 
+  cor() %>% 
+  as_tibble(rownames = "item1") %>% 
+  pivot_longer(-item1, "item2") %>% 
+  filter(item1 < item2) %>% 
+  arrange(-abs(value))
+```
+
+Test the effect of only including two features:
+
+```{r}
+set.seed(RANDOM_SEED)
+
+m1_ <- abt_sub_std %>% 
+  sample_n(10000) %>% 
+  glmmTMB(
+    formula = target ~ 
+      time_days_since_inf1 + 
+      acs_pop_total + acs_median_hh_inc_10k + acs_race_minority + 
+      unemployed + 
+      cov_pos_tests_frac + 
+      cov_total_tests + 
+      mobility_retail_and_recreation + mobility_grocery_and_pharmacy + 
+      mobility_parks + mobility_transit_stations + 
+      mobility_workplaces + mobility_residential + 
+      (1 | state_code/county_fip), 
+    data = .
+  )
+
+set.seed(RANDOM_SEED)
+
+m2_ <- abt_sub_std %>% 
+  sample_n(10000) %>% 
+  glmmTMB(
+    formula = target ~ 
+      time_days_since_inf1 + 
+      acs_pop_total + acs_median_hh_inc_10k + acs_race_minority + 
+      unemployed + 
+      cov_pos_tests_frac + 
+      cov_total_tests + 
+      mobility_retail_and_recreation + mobility_workplaces + 
+      (1 | state_code/county_fip), 
+    data = .
+  )
+
+# No major difference, so OK to change.
+bind_rows(
+  glance(m1_) %>% mutate(model = "original", .before = everything()),
+  glance(m2_) %>% mutate(model = "new", .before = everything())
+)
+```
+
+(No change to implement.)
+
+---
+
+## Univariate target associations
+
+For each feature in our data, how well does it help fits? 
+How well does it fit held out data? 
+What are its standalone parameter estimates?
+
+Numerics:
+
+```{r, fig.height=8, fig.width=10}
+set.seed(RANDOM_SEED)
+abt_sub_std %>% 
+  sample_n(10000) %>% 
+  select(-c(date:county), state_code) %>% 
+  select(target, state_code, where(is.numeric)) %>% 
+  mutate(target_scaled = target / acs_pop_total) %>% 
+  pivot_longer(-c(target, target_scaled, state_code)) %>% 
+  ggplot(aes(value, target, group = state_code)) + 
+  geom_smooth(method = "glm", size = 0.5, alpha = 0.5) + 
+  facet_wrap(~ name, scales = "free_x") + 
+  theme(aspect.ratio = 9 / 16) + 
+  labs(title = "Per-state glm")
+
+
+set.seed(RANDOM_SEED)
+abt_sub_std %>% 
+  sample_n(10000) %>% 
+  select(-c(date:county), state_code) %>% 
+  select(target, state_code, where(is.numeric)) %>% 
+  mutate(target_scaled = target / acs_pop_total) %>% 
+  pivot_longer(-c(target, target_scaled, state_code)) %>% 
+  ggplot(aes(value, target)) + 
+  geom_smooth(size = 0.5, alpha = 0.5) + 
+  facet_wrap(~ name, scales = "free_x") + 
+  theme(aspect.ratio = 9 / 16) + 
+  labs(title = "Total")
+```
+
+Factors:
+
+```{r}
+sample_abt %>% 
+  select(-c(date:county)) %>% 
+  select(target, where(is.factor)) %>% 
+  pivot_longer(-target) %>% 
+  ggplot(aes(value, target)) + 
+  geom_boxplot(outlier.shape = NA) + 
+  facet_wrap(~ name, scales = "free_x") + 
+  ylim(0, 40)
+```
+
+We'll tackle interactions during modeling.
+
+---
+
+# Data samples for development
+
+## Sample 1: 10 counties by 10 states
 
 To keep development snappy, take 10 counties per state for 10 states. (Yes, this
 is biased, but it allows for several kinds of useful tests.)
@@ -346,158 +764,36 @@ sample_abt <- abt_sub_std %>%
 dim(sample_abt)
 ```
 
----
+## Sample 2: 40 counties by 25 states
 
-# Feature testing
+```{r}
+set.seed(RANDOM_SEED)
 
-Test features using the development subset.
+sample2_ids <- abt_sub_std %>% 
+  group_by(state, state_code) %>% 
+  summarize(n_counties = n_distinct(county_fip), .groups = "drop") %>% 
+  filter(n_counties > 40) %>% 
+  sample_n(25) %>% 
+  left_join(abt_sub_std, by = c("state", "state_code")) %>% 
+  distinct(state, state_code, county, county_fip) %>% 
+  group_by(state_code) %>% 
+  sample_n(40) %>% 
+  ungroup()
 
-## Correlations
+sample2_abt <- abt_sub_std %>% 
+  semi_join(sample2_ids, by = c("state", "state_code", "county", "county_fip"))
 
- - [x] Bug in our minority feature
- - Days since infection tracks week of the year, as you'd expect
-   - Keep days since infection?
- - Collapse into larger age bins?
- - Unclear about the mobility; the correlations are lesser
-
-```{r, fig.width=8, fig.height=8}
-correlations <- abt_sub_std %>% 
-  select(-c(date:county)) %>% 
-  select(where(is.numeric)) %>% 
-  cor()
-
-correlations %>% 
-  as_tibble(rownames = "feature1") %>% 
-  pivot_longer(-feature1, names_to = "feature2", values_to = "correlation") %>% 
-  filter(abs(correlation) > 0.6) %>% 
-  filter(feature1 < feature2) %>% 
-  arrange(-abs(correlation))
-
-corrplot::corrplot(
-  correlations, 
-  method = "color", 
-  order = "hclust", 
-  tl.col = "black", 
-  tl.cex = 0.8
-)
+dim(sample2_abt)
 ```
 
 ---
 
-## Boruta
+# Model building: Sample 1
 
-Run Boruta against the full sample data. Boruta runs permutation tests against
-the input features using Random Forests to identify all _relevant_ features.
+We initially applied a zero-inflated negative-binomial model, but after 
+removing the initial zeros it seems not to be needed.
 
-```{r}
-save_path <- here("data/ts_boruta_sample.rds")
-
-if (!file.exists(save_path)) {
-  cat("Re-running Boruta\n")
-  bb <- sample_abt %>% 
-    select(-c(date:county)) %>% 
-    Boruta::Boruta(target ~ ., data = ., maxRuns = 50, doTrace = 2)
-  saveRDS(bb, save_path)
-}
-
-bb <- readRDS(save_path)
-```
-
-NB: 
-
- - `time_dow` is rejected
- - Now that we start on infection "day zero," some of our feature 
-   importance have changed
-
-```{r}
-# Make a nicer Boruta importance history plot that lists all column names
-bb$ImpHistory %>% 
-  as_tibble(rownames = "iteration") %>% 
-  pivot_longer(-iteration, names_to = "feature", values_to = "importance") %>% 
-  filter(importance > -Inf) %>% 
-  left_join(enframe(bb$finalDecision, "feature", "decision"), by = "feature") %>% 
-  mutate(feature = fct_rev(fct_reorder(factor(feature), importance, median))) %>% 
-  ggplot(aes(feature, importance, fill = decision)) + 
-  geom_boxplot() + 
-  coord_flip() + 
-  scale_fill_manual(na.translate = F, values = c("#00cc66", "#9966ff"))
-``` 
-
----
-
-## Univariate target associations
-
-For each feature in our data, how well does it help fits? 
-How well does it fit held out data? 
-What are its standalone parameter estimates?
-
-### Plots
-
-Numerics:
-
-```{r, fig.height=8, fig.width=10}
-sample_abt %>% 
-  select(-c(date:county)) %>% 
-  select(target, where(is.numeric)) %>% 
-  pivot_longer(-target) %>% 
-  ggplot(aes(value, target)) + 
-  geom_smooth(size = 0.5) + 
-  facet_wrap(~ name, scales = "free_x") + 
-  theme(aspect.ratio = 9 / 16)
-```
-
-Factors:
-
-```{r}
-sample_abt %>% 
-  select(-c(date:county)) %>% 
-  select(target, where(is.factor)) %>% 
-  pivot_longer(-target) %>% 
-  ggplot(aes(value, target)) + 
-  geom_boxplot(outlier.shape = NA) + 
-  facet_wrap(~ name, scales = "free_x") + 
-  ylim(0, 40)
-```
-
----
-
-## Multivariate target associations
-
-For seemingly useful feature sets in our data, how well do they help fits? 
-How well do they fit held out data? 
-What are its standalone parameter estimates?
-
-### Age and economic status
-
-```{r}
-sample_abt %>% 
-  select(target, acs_median_hh_inc_10k, starts_with("acs_age")) %>% 
-  glm(target ~ acs_median_hh_inc_10k*(
-      acs_age_25_34 + acs_age_35_44 + acs_age_45_54 + acs_age_55_64 + 
-      acs_age_65_74 + acs_age_75_84 + acs_age_85_ge
-    ), family = poisson(), data = .) %>% 
-  summary()
-```
-
-### Economic and minority status
-
-```{r}
-sample_abt %>% 
-  select(target, acs_median_hh_inc_10k, acs_race_minority) %>% 
-  glm(
-    target ~  acs_median_hh_inc_10k*acs_race_minority, 
-    family = poisson(), 
-    data = .
-  ) %>% 
-  summary()
-```
-
----
-
-# Model building
-
-We use a zero-inflated negative-binomial model. (Update: in this scheme we
-don't need zero inflation.) Add features, testing CV performance as we go.
+Here we use out small CV sample to add features and test CV performance.
 
 ---
 
@@ -506,13 +802,13 @@ don't need zero inflation.) Add features, testing CV performance as we go.
 ```{r}
 save_path <- here("data/ts_model_baseline.rds")
 
-if (!file.exists(save_path)) {
+if (!file.exists(save_path) | FORCE_MODEL_RUN) {
   cat("Running model\n")
   
   baseline <- run_model_vfold(
     formula = target ~ 1 + (1 | state_code/county_fip),
     data = sample_abt, 
-    ziformula = ~ 1
+    ziformula = ~ 1 + (1 | state_code/county_fip)
   )
   saveRDS(baseline, save_path)
 }
@@ -530,7 +826,7 @@ baseline %>% extract_cv_perf()
 ```{r}
 save_path <- here("data/ts_model_baseline_nozi.rds")
 
-if (!file.exists(save_path)) {
+if (!file.exists(save_path) | FORCE_MODEL_RUN) {
   cat("Running model\n")
   
   baseline_nozi <- run_model_vfold(
@@ -548,6 +844,29 @@ Little difference in performance.
 ```{r}
 baseline_nozi %>% extract_cv_glance()
 baseline_nozi %>% extract_cv_perf()
+```
+
+### With time
+
+```{r}
+save_path <- here("data/ts_model_baseline_time.rds")
+
+if (!file.exists(save_path) | FORCE_MODEL_RUN) {
+  cat("Running model\n")
+  
+  baseline_time <- run_model_vfold(
+    formula = target ~ 1 + time_days_since_inf1 + (1 | state_code/county_fip),
+    data = sample_abt
+  )
+  saveRDS(baseline_time, save_path)
+}
+
+baseline_time <- readRDS(save_path)
+```
+
+```{r}
+baseline_time %>% extract_cv_glance()
+baseline_time %>% extract_cv_perf()
 ```
 
 ---
@@ -716,7 +1035,7 @@ larger_model_formulae <- list(
 iwalk(larger_model_formulae, ~ {
   save_path <- here(glue("data/ts_model_{.y}.rds"))
 
-  if (!file.exists(save_path)) {
+  if (!file.exists(save_path) | FORCE_MODEL_RUN) {
     cat(glue("Running model {.y}"), "\n\n")
     
     model <- run_model_vfold(
@@ -780,73 +1099,247 @@ larger_models %>%
 ```{r, echo=F}
 # Visualize the fixed effects for 1 CV fold
 iwalk(larger_models, ~ print(plot_model(.x$object[[1]], title = .y, type = "est")))
-# iwalk(larger_models, ~ print(plot_model(.x$object[[1]], title = .y, type = "re")))
+```
+
+### Model coefficients aggregation
+
+```{r}
+# This is simple error propagation assuming independent obvs as a way to combine fits
+s1_coef_agg <- larger_models %>% 
+  map_dfr(~ {
+    select(.x, tidy) %>% 
+      unnest(tidy) %>% 
+      group_by(effect, component, group, term) %>% 
+      summarize(
+        estimate = mean(estimate), 
+        std.error = sqrt(sum(std.error**2)), 
+        .groups = "drop"
+      )
+  }, .id = "model")
+
+
+s1_coef_agg %>% 
+  ggplot(aes(model, estimate)) + 
+  geom_hline(yintercept = 0) + 
+  geom_point() + 
+  geom_errorbar(
+    aes(ymin = estimate - 2 * std.error, ymax = estimate + 2 * std.error)
+  ) + 
+  facet_wrap(~ term, scales = "free_y")
 ```
 
 ---
 
-## Handle correlations
+# Model building: Sample 2
 
-### Decorrelate COVID tests
+Similar tests, but with a larger sample.
+We also start from policy and add features that (1) help prediction and 
+(2) might help with policy inference.
 
 ```{r}
-sample_abt %>% 
-  mutate(cov_pos_tests = cov_pos_tests / cov_total_tests) %>% 
-  with(cor(cov_pos_tests, cov_total_tests))
-
-sample_abt <- sample_abt %>% 
-  mutate(
-    cov_pos_tests_frac = cov_pos_tests / cov_total_tests,
-    (cov_pos_tests_frac - mean(cov_pos_tests_frac)) / sd(cov_pos_tests_frac)
+sample2_abt <- sample2_abt %>% 
+  select(
+    -time_dow, -time_wk_yr, -cov_pos_tests, -starts_with("mobility"),
+    mobility_retail_and_recreation, mobility_workplaces
   )
 ```
 
-```{r}
-save_path <- here(glue("data/ts_model_larger_dem_pop_test_covfrac.rds"))
+---
 
-if (!file.exists(save_path)) {
-  cat(glue("Running model larger_dem_pop_test_covfrac"), "\n\n")
-  
-  # Same model as before, with a different covid pos test var
-  model <- run_model_vfold(
-    formula = target ~ 1 + 
-      time_days_since_inf1 + 
-      # Demographics
-      acs_pop_total + acs_median_hh_inc_10k + acs_race_minority + 
-      acs_age_25_34 + acs_age_35_44 + acs_age_45_54 + acs_age_55_64 + 
-      acs_age_65_74 + acs_age_75_84 + acs_age_85_ge + 
-      # Policy
-      policy_recoded + 
-      # Testing
-      cov_pos_tests_frac + cov_total_tests + 
-      (1 | state_code/county_fip),
-    data = sample_abt
-  )
-  
-  saveRDS(model, save_path)
-}
+## Policy-only
 
-larger_dem_pop_test_covfrac <- readRDS(save_path)
-```
-
-It isn't clear that removing this correlation helps.
+This is the baseline; it won't be good.
 
 ```{r}
-larger_dem_pop_test_covfrac %>% 
-  extract_cv_perf()
-
-larger_models[["larger_dem_pop_test"]] %>% 
-  extract_cv_perf()
+s2_pol_bl <- here("data/ts_model_s2_pol_bl.rds") %>%
+  cache_operation({
+    run_model_vfold(
+     formula = target ~ 1 + policy_recoded + (1 | state_code/county_fip),
+     data = sample2_abt
+    )
+  })
 ```
 
-### Age binning
+### Stats tables
 
-From correlation analysis, we should reduce the number of age bins.
-Do this and test the impact on one of our models above.
+```{r}
+s2_pol_bl %>% extract_cv_glance()
+s2_pol_bl %>% extract_cv_perf()
+s2_pol_bl %>% extract_cv_tidy()
+```
+
+### Fit charts
+
+```{r}
+plot_model(s2_pol_bl$object[[1]])
+plot_model(s2_pol_bl$object[[1]], type = "re")[[2]]  # state-level
+```
+
+### Trajectory plots
+
+Sample a few counties, two from each fold, and plot predictions.
+Note that the fits are OK, but the directionality makes no sense because
+we are missing many covariates.
+
+```{r}
+set.seed(RANDOM_SEED)
+
+s2_pol_bl_ex <- s2_pol_bl %>% 
+  future_pmap_dfr(~ {
+    model <- ..2
+    data  <- ..7
+    
+    # Sample a random county, then predict it with the model
+    data %>% 
+      distinct(county_fip) %>% 
+      sample_n(2) %>% 
+      semi_join(data, ., by = "county_fip") %>%
+      mutate(
+        yhat = predict(model, ., allow.new.levels = T, type = "response")
+      )
+  })
+```
+
+```{r}
+plot_w_policy(s2_pol_bl_ex)
+```
+
+---
+
+## Policy with key covariates
+
+ - time since infection
+ - population
+ - demographics
+ - covid test counts
+
+```{r}
+s2_pol_cov1 <- here("data/ts_model_s2_pol_cov.rds") %>%
+  cache_operation({
+    run_model_vfold(
+     formula = target ~ 1 + 
+       policy_recoded + 
+       time_days_since_inf1 + 
+       acs_pop_total + 
+       acs_race_minority + 
+       acs_gender_female + 
+       acs_median_hh_inc_10k + 
+       acs_age_25_54 + acs_age_55_84 + acs_age_85_ge + 
+       cov_total_tests + cov_pos_tests_frac + 
+       (1 | state_code/county_fip),
+     data = sample2_abt
+    )
+  })
+```
+
+### Stats tables
+
+```{r}
+s2_pol_cov1 %>% extract_cv_glance()
+s2_pol_cov1 %>% extract_cv_perf()
+s2_pol_cov1 %>% extract_cv_tidy()
+```
+
+### Fit charts
+
+ - Results are consistent
+ - The female proportion results are confusing
+ - Right now, all policies are correlated with rising cases, which
+   really suggests we haven't captured it yet
+
+```{r}
+plot_models(s2_pol_cov1$object, dot.size = 2)
+plot_model(s2_pol_bl$object[[1]], type = "re")[[2]]  # state-level
+```
+
+### Trajectory plots
+
+```{r}
+set.seed(RANDOM_SEED)
+
+s2_pol_cov1_ex <- s2_pol_cov1 %>% cv_extract_preds(.per_fold = 2)
+plot_w_policy(s2_pol_cov1_ex)
+```
+
+---
+
+## Policy with economics
+
+```{r}
+s2_pol_cov1_econ <- here("data/ts_model_s2_pol_cov_econ.rds") %>%
+  cache_operation({
+    run_model_vfold(
+     formula = target ~ 1 + 
+       policy_recoded + 
+       time_days_since_inf1 + 
+       acs_pop_total + 
+       acs_race_minority + 
+       acs_gender_female + 
+       acs_median_hh_inc_10k + 
+       acs_age_25_54 + acs_age_55_84 + acs_age_85_ge + 
+       cov_total_tests + cov_pos_tests_frac + 
+       labor_force + unemployed + 
+       (1 | state_code/county_fip),
+     data = sample2_abt
+    )
+  })
+```
+
+### Stats tables
+
+```{r}
+s2_pol_cov1_econ %>% extract_cv_glance()
+s2_pol_cov1_econ %>% extract_cv_perf()
+s2_pol_cov1_econ %>% extract_cv_tidy()
+```
+
+### Fit charts
+
+ - Results are consistent
+ - The female proportion results are confusing
+ - Right now, all policies are correlated with rising cases, which
+   really suggests we haven't captured it yet
+
+```{r}
+plot_models(s2_pol_cov1_econ$object, dot.size = 2)
+plot_model(s2_pol_cov1_econ$object[[1]], type = "re")[[2]]  # state-level
+```
+
+### Trajectory plots
+
+```{r}
+set.seed(RANDOM_SEED)
+
+s2_pol_cov1_econ_ex <- s2_pol_cov1_econ %>% cv_extract_preds(.per_fold = 2)
+plot_w_policy(s2_pol_cov1_econ_ex)
+```
+
+---
+
+## Pol with simple policy interactions
+
+- policy and time (policy impact over time)
+- policy and population (urban, rural)
+- policy and race, wealth
+
+---
+
+## Pol with simple confounding interactions
+
+ - covid test acceleration?
+ - demo
+ - 
 
 ```{r}
 
 ```
+
+
+
+
+
+
+
 
 ---
 
