@@ -223,7 +223,7 @@ plot_w_policy <- function(df, y = NULL) {
   
   ggplot(data = df, aes(x = date, y = !!target)) +
     geom_line() + 
-    facet_wrap(~ state + county, nrow = length(ex_counties), scales = 'free_y') +
+    facet_wrap(~ state + county, scales = 'free_y') +
     scale_fill_viridis_d() +
     ylab(y) +
     geom_rect(
@@ -422,23 +422,23 @@ Rather than using the raw counts we will divide by the population
 in order to get the percentage of people falling in each bucket.
 ```{r}
 acs_cols <- names(dd)[grepl('acs', names(dd))]
+
 acs_age_cols <- acs_cols[grepl('age', acs_cols)]
 acs_gender_cols <- acs_cols[grepl('gender_(?!total)', acs_cols, perl=T)]
 acs_race_cols <- acs_cols[grepl('race_(?!total)', acs_cols, perl=T)]
-acs_income_cols <- c("acs_median_hh_inc_total")
 
 select(dd, all_of(acs_cols)) %>%
   map_dbl(~ mean(is.na(.x))) %>%
   enframe('col', 'pct_na') %>%
   arrange(desc(pct_na))
-```
 
-```{r}
-acs_cols <- c(acs_age_cols, acs_gender_cols, acs_race_cols, acs_income_cols)
-
+# Not including median HH income, b/c that already has useful units
+acs_cols <- c(acs_age_cols, acs_gender_cols, acs_race_cols)
 dd <- dd %>% 
   mutate(across(all_of(acs_cols), ~ .x / acs_pop_total))
 ```
+
+### Ages
 
 Make age buckets that correspond to CDC listings, e.g., 
 <https://www.cdc.gov/nchs/nvss/vsrr/covid_weekly/index.htm#AgeAndSex>
@@ -457,7 +457,63 @@ dd <- dd %>%
     acs_age_65_74 = acs_age_65_66 + acs_age_67_69 + acs_age_70_74,
     acs_age_75_84 = acs_age_75_79 + acs_age_80_84,
     acs_age_85_ge = acs_age_85_up
-  )
+  ) %>% 
+  select(-one_of(acs_age_cols))
+```
+
+### Gender
+
+Male and female proportions are complementary, so only keep female.
+
+```{r}
+stopifnot(all(dd$acs_pop_total == dd$acs_gender_total))
+
+dd <- dd %>% select(-acs_gender_male, -acs_gender_total)
+```
+
+### Race
+
+Keep all the individual demographics, but add a total "minority" proportion.
+
+```{r}
+stopifnot(all(dd$acs_pop_total == dd$acs_race_total))
+
+dd <- dd %>% 
+  mutate(acs_race_minority = acs_race_total - acs_race_white) %>% 
+  select(-acs_race_total)
+```
+
+### Household income
+
+There's a single county without median income:
+
+```{r}
+dd %>% 
+  distinct(state, county, acs_median_hh_inc_total) %>% 
+  filter(is.na(acs_median_hh_inc_total))
+```
+
+So, we take a population-weighted median from across the state as a quick inputation:
+
+```{r}
+imputed_value <- dd %>% 
+  filter(state == "New Mexico") %>% 
+  distinct(state, county, acs_pop_total, acs_median_hh_inc_total) %>% 
+  na.omit() %>% 
+  summarize(
+    imputed = sum(acs_pop_total * acs_median_hh_inc_total) / sum(acs_pop_total)
+  ) %>% 
+  pull(imputed)
+
+dd[dd$state == "New Mexico", ]$acs_median_hh_inc_total <- 
+  replace_na(dd[dd$state == "New Mexico", ]$acs_median_hh_inc_total, imputed_value)
+
+stopifnot(all(!is.na(dd$acs_median_hh_inc_total)))
+```
+
+```{r}
+# Drop unused ACS income cols
+dd <- dd %>% select(-starts_with("acs_median_hh"), acs_median_hh_inc_total)
 ```
 
 ---
@@ -494,8 +550,12 @@ dd <- dd %>%
 Use the daily number of unemployment claims.
 
 ```{r}
-econ_cols <- c('labor_force', 'unemployed', 'county_daily_unemployment_change',
-               'county_daily_interp_total_claims')
+econ_cols <- c(
+  'labor_force', 
+  'unemployed', 
+  'county_daily_unemployment_change',
+  'county_daily_interp_total_claims'
+)
 
 select(dd, all_of(econ_cols)) %>%
     map_dbl(~ mean(is.na(.x))) %>%
@@ -510,16 +570,51 @@ dd <- dd %>%
 
 ---
 
+## Testing
+
+Testing data is complete once it begins:
+
+```{r}
+cov_cols <- c(
+  "cov_pos_tests",
+  "cov_total_tests"
+)
+
+dd %>% 
+  select(state, county, county_fip, date, one_of(cov_cols)) %>% 
+  pivot_longer(all_of(cov_cols)) %>% 
+  group_by(state, county, county_fip, name) %>% 
+  summarize(
+    max_na = suppressWarnings(max(date[is.na(value)])),
+    min_not_na = suppressWarnings(min(date[!is.na(value)])),
+    .groups = "drop"
+  ) %>% 
+  filter(min_not_na < max_na) %>% 
+  summarize(nrow = nrow(.))
+```
+
+So impute zeros until the first count:
+
+```{r}
+dd <- dd %>% 
+  group_by(state, county) %>% 
+  # Only keep the columns we've checked
+  select(-starts_with("cov_"), all_of(cov_cols)) %>% 
+  mutate(across(all_of(cov_cols), replace_na, 0L))
+
+stopifnot(all(!is.na(dd$cov_pos_tests)))
+stopifnot(all(!is.na(dd$cov_total_tests)))
+```
+
+---
+
 # Final checks and writing
 
 ## NA checks
 
 ```{r}
-dd %>% 
-  summarize(across(.fns = ~ sum(is.na(.)))) %>% 
-  pivot_longer(everything()) %>% 
-  filter(value > 0) %>% 
-  deframe()
+sums <- colSums(is.na(dd))
+sums[sums > 0]
 ```
 
 ## Write Results
