@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 
 import io
+import sys
 import tarfile
 from pathlib import Path
 
 import requests
 
+sys.path.append("trent")
 from trent.data import run_pipeline
 
 VERSION_ID = "ubTsPxn.gyi2RgyAtE9SrmpbGarnKzWK"
@@ -14,7 +16,7 @@ VERSION_ID = "ubTsPxn.gyi2RgyAtE9SrmpbGarnKzWK"
 def download_data():
     """Download data sources archive from S3 and unpack into the data directory"""
     curdir = Path(__file__).resolve()
-    data_dir = curdir.parents[3] / "data"
+    data_dir = curdir.parents[2] / "data"
     if not data_dir.exists():
         data_dir.mkdir()
 

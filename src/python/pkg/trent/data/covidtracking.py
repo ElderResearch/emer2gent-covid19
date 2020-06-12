@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
 import requests
-from pathlib import Path
+
+from trent.data import DATA_DIR
 
 
 def get_covidtracking_data():
@@ -10,7 +11,7 @@ def get_covidtracking_data():
     r = requests.get(url)
     r.raise_for_status()
 
-    outfile = Path(__file__).resolve().parents[5] / "data" / "covidtracking.csv"
+    outfile = DATA_DIR / "raw" / "covidtracking.csv"
     outfile.write_text(r.content.decode(r.encoding))
 
 
