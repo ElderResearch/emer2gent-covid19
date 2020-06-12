@@ -40,7 +40,10 @@ suppressPackageStartupMessages({
 ```{r}
 # determine absolute path to the overall **project** data directory
 proj_data_path <- path_abs(path("..", "..", "..", 'data'))
-d <- read.csv(list.files(proj_data_path, pattern = 'ABT', full.names = TRUE))
+
+# Use vroom and match read.csv introduction of "." in place of " "
+d <- vroom::vroom(list.files(proj_data_path, pattern = 'ABT', full.names = TRUE)) %>% 
+  rename_with(~ str_replace_all(., " ", "."))
 
 d <- as_tibble(d) %>%
   mutate(date = as.Date(date)) %>%
@@ -419,23 +422,18 @@ categories with the exception of income. But the total median income
 is also available, so we take that in, too.
 
 Rather than using the raw counts we will divide by the population
-in order to get the percentage of people falling in each bucket.
+in order to get the percentage (fraction) of people falling in each bucket.
+
 ```{r}
 acs_cols <- names(dd)[grepl('acs', names(dd))]
-
 acs_age_cols <- acs_cols[grepl('age', acs_cols)]
-acs_gender_cols <- acs_cols[grepl('gender_(?!total)', acs_cols, perl=T)]
-acs_race_cols <- acs_cols[grepl('race_(?!total)', acs_cols, perl=T)]
+acs_gender_cols <- acs_cols[grepl('gender_(?!total)', acs_cols, perl = T)]
+acs_race_cols <- acs_cols[grepl('race_(?!total)', acs_cols, perl = T)]
 
 select(dd, all_of(acs_cols)) %>%
   map_dbl(~ mean(is.na(.x))) %>%
   enframe('col', 'pct_na') %>%
   arrange(desc(pct_na))
-
-# Not including median HH income, b/c that already has useful units
-acs_cols <- c(acs_age_cols, acs_gender_cols, acs_race_cols)
-dd <- dd %>% 
-  mutate(across(all_of(acs_cols), ~ .x / acs_pop_total))
 ```
 
 ### Ages
@@ -458,7 +456,8 @@ dd <- dd %>%
     acs_age_75_84 = acs_age_75_79 + acs_age_80_84,
     acs_age_85_ge = acs_age_85_up
   ) %>% 
-  select(-one_of(acs_age_cols))
+  select(-one_of(acs_age_cols)) %>% 
+  mutate(across(starts_with("acs_age"), ~ . / acs_pop_total))
 ```
 
 ### Gender
@@ -468,7 +467,9 @@ Male and female proportions are complementary, so only keep female.
 ```{r}
 stopifnot(all(dd$acs_pop_total == dd$acs_gender_total))
 
-dd <- dd %>% select(-acs_gender_male, -acs_gender_total)
+dd <- dd %>% 
+  select(-acs_gender_male, -acs_gender_total) %>% 
+  mutate(acs_gender_female = acs_gender_female / acs_pop_total)
 ```
 
 ### Race
@@ -479,7 +480,7 @@ Keep all the individual demographics, but add a total "minority" proportion.
 stopifnot(all(dd$acs_pop_total == dd$acs_race_total))
 
 dd <- dd %>% 
-  mutate(acs_race_minority = acs_race_total - acs_race_white) %>% 
+  mutate(acs_race_minority = 1 - acs_race_white / acs_pop_total) %>% 
   select(-acs_race_total)
 ```
 
