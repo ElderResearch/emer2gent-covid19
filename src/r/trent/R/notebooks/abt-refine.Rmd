@@ -42,7 +42,7 @@ suppressPackageStartupMessages({
 
 ```{r}
 # determine absolute path to the overall **project** data directory
-proj_data_path <- path_abs(path("..", "..", "..", 'data', 'processed'))
+proj_data_path <- path_abs(path("..", "..", "..", 'data'))
 
 # Use vroom and match read.csv introduction of "." in place of " "
 d <- vroom::vroom(list.files(proj_data_path, pattern = 'ABT', full.names=TRUE)) %>% 
