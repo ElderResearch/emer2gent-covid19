@@ -4,6 +4,7 @@
 .gapikey
 *.csv
 *.gz
+*.feather
 
 # renv stuff
 library/

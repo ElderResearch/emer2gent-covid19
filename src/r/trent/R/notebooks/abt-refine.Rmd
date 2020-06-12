@@ -21,6 +21,7 @@ ggplot2::theme_set(ggplot2::theme_minimal())
 suppressPackageStartupMessages({
   library(magrittr)
   library(dplyr)
+  library(feather)
   library(forcats)
   library(fs)
   library(ggplot2)
@@ -28,9 +29,11 @@ suppressPackageStartupMessages({
   library(lubridate)
   library(purrr)
   library(readr)
+  library(rlang)
   library(stringr)
   library(tibble)
   library(tidyr)
+  library(vroom)
   library(zoo)
 })
 ```
@@ -42,23 +45,23 @@ suppressPackageStartupMessages({
 proj_data_path <- path_abs(path("..", "..", "..", 'data'))
 
 # Use vroom and match read.csv introduction of "." in place of " "
-d <- vroom::vroom(list.files(proj_data_path, pattern = 'ABT', full.names = TRUE)) %>% 
-  rename_with(~ str_replace_all(., " ", "."))
+d <- vroom::vroom(list.files(proj_data_path, pattern = 'ABT', full.names=TRUE)) %>% 
+  rename_with(~ str_replace_all(., " ", ".")) %>%
+  rename_all(tolower) %>%
+  rename_all(~ gsub('\\.', '_', .)) %>%
+  rename(
+    cov_pos_tests = cov_positive,
+    cov_neg_tests = cov_negative,
+    cov_in_hosp = cov_hospitalizedcurrently,
+    cov_total_pos = cov_total,
+    cov_total_tests = cov_totaltestresults
+)
 
 d <- as_tibble(d) %>%
   mutate(date = as.Date(date)) %>%
   mutate(across(where(is.factor), as.character)) %>% 
   arrange(state, county, date)
 
-# clean up names
-names(d) <- gsub('\\.', '_', tolower(names(d)))
-d <- d %>% rename(
-  cov_pos_tests = cov_positive,
-  cov_neg_tests = cov_negative,
-  cov_in_hosp = cov_hospitalizedcurrently,
-  cov_total_pos = cov_total,
-  cov_total_tests = cov_totaltestresults
-)
 ```
 
 # Convenience Functions
@@ -244,11 +247,9 @@ plot_w_policy <- function(df, y = NULL) {
 Count the number of _new_ infections over a seven-day period
 
 ```{r warning=F}
-# Change of Pace
 dd <- dd %>%
   group_by(state, county) %>%
   mutate(
-    confirmed = correct_negative_it(confirmed),
     confirmed_cum = confirmed,
     confirmed_cum_lag_7 = lag(confirmed_cum, 7),
     target = (confirmed_cum - confirmed_cum_lag_7),
@@ -622,4 +623,5 @@ sums[sums > 0]
 
 ```{r}
 readr::write_csv(dd, 'data/abt_prepped.csv')
+feather::write_feather(dd, 'data/abt_prepped.feather')
 ```
