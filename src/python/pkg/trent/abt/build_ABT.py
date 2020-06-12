@@ -172,7 +172,7 @@ def join_all_data():
 
     # -------------------------------------------------------------------------------
 
-    # STEP 5 : Add Tracking data
+    # STEP 6 : Add Tracking data
     # Ensure columns have the same data type
     ABT_V4["date"] = pd.to_datetime(ABT_V4["date"].apply(str)).dt.date
 
@@ -191,7 +191,30 @@ def join_all_data():
 
     print("Added Testing data:")
     print(f"ABT.shape ={ABT_V5.shape}")
-    return ABT_V5
+
+    # -------------------------------------------------------------------------------
+
+    # STEP 6: Add population density data 
+    # time indp. -> join on county_fip 
+    print(area_df.columns)
+    ABT_V6 = pd.merge(
+        ABT_V5,
+        area_df,
+        how="left",
+        left_on=["county_fip"],
+        right_on=["county_fip"],
+        suffixes=("", "_dropMe")
+    )
+
+    ABT_V6.drop(ABT_V6.filter(regex="_dropMe$").columns.tolist(), axis=1, inplace=True)
+    ABT_V6.drop(["Areaname"],axis=1,inplace = True)
+    # Get population density by total poluation / area mass -> zero divison returns nans 
+    ABT_V6["pop_density"] = ABT_V6["acs_pop_total"]/ABT_V6["land_area"]
+
+    print("Added Population Density:")
+    print(f"ABT.shape ={ABT_V6.shape}")
+
+    return ABT_V6
 
 
 # ------- Helper Functions ------- #
@@ -274,6 +297,9 @@ if __name__ == "__main__":
     ]
     # filter keep columns from  tracking data :
     tracking_df = tracking_df.loc[:, tracking_df.columns.isin(keep)]
+
+    # Get density data:
+    area_df = pd.read_csv(DATA_DIR / "county_area.csv")
 
     # Get ABT
     ABT_final = join_all_data()
