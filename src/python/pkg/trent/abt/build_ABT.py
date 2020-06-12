@@ -2,6 +2,8 @@
 import pandas as pd
 import os
 
+from trent.data import DATA_DIR
+
 
 """ Overview 
 
@@ -26,29 +28,30 @@ what the state polices. Apart from the cases where county-level policy data is p
 
 # ------- Main Function ------- #
 
+
 def join_all_data():
 
-    # CDC = LEFT TABLE 
-    
+    # CDC = LEFT TABLE
+
     # STEP 1:
     # Join policy data to CDC data
     # Policy data is a combination of state level & county level data
 
-    # Split into disjoin data sets bassed on county & state level existence in policy data 
+    # Split into disjoin data sets bassed on county & state level existence in policy data
     Policy_state_df = Policy_df[Policy_df.county.isna()]
     Policy_county_df = Policy_df[~Policy_df.county.isna()]
 
-    # checks to CDC data 
-    # ADD a check to scrip: 
+    # checks to CDC data
+    # ADD a check to scrip:
     county_names_with_policy = Policy_county_df.county.unique()
     county_names_in_cdc = CDC_df.county.unique()
 
     # Check if any of the policy names are not in the CDC!
     not_in_cdc = [k for k in county_names_with_policy if k not in county_names_in_cdc]
     print(f"County in Policy but not in CDC:\n {not_in_cdc}")
-    # This is getting droped becasue of the left Join 
+    # This is getting droped becasue of the left Join
 
-    # Furthermore, split the CDC wrt the fips county code that exisit in policy data 
+    # Furthermore, split the CDC wrt the fips county code that exisit in policy data
     county_fip_with_policy = Policy_county_df.county_fip.unique()
     CDC_df_0 = CDC_df[
         ~CDC_df.county_fip.isin(county_fip_with_policy)
@@ -57,9 +60,9 @@ def join_all_data():
         CDC_df.county_fip.isin(county_fip_with_policy)
     ]  # with county level data
 
-    # Join compodents sepretly: 
+    # Join compodents sepretly:
 
-    # Left join to CDC_df_0 -> this will give the state policy for counties 
+    # Left join to CDC_df_0 -> this will give the state policy for counties
     ABT_sub_0 = pd.merge(
         CDC_df_0,
         Policy_state_df,
@@ -75,7 +78,7 @@ def join_all_data():
         ABT_sub_0.filter(regex="_dropMe$").columns.tolist(), axis=1, inplace=True
     )
 
-    # left join on CDC_df_1 to add county level policy data 
+    # left join on CDC_df_1 to add county level policy data
     ABT_sub_1 = pd.merge(
         CDC_df_1,
         Policy_county_df,
@@ -92,9 +95,9 @@ def join_all_data():
     ABT_V0 = pd.concat([ABT_sub_0, ABT_sub_1], ignore_index=True)
     print("Added Policy data:")
     print(f"ABT.shape ={ABT_V0.shape}")
-    
+
     # -------------------------------------------------------------------------------
-    
+
     # STEP 2: Add mobility data
     # Left join to ABT_V0 on [county_fip , date]
     ABT_V1 = pd.merge(
@@ -105,16 +108,14 @@ def join_all_data():
         right_on=["county_fip", "date"],
         suffixes=("", "_dropMe"),
     )
-    ABT_V1.drop(
-        ABT_V1.filter(regex="_dropMe$").columns.tolist(), axis=1, inplace=True
-    )
+    ABT_V1.drop(ABT_V1.filter(regex="_dropMe$").columns.tolist(), axis=1, inplace=True)
 
     print("Added Mobility data:")
     print(f"ABT.shape ={ABT_V1.shape}")
 
     # -------------------------------------------------------------------------------
     # STEP 3: Add weather data
-    # Weather data can be joined [county_fip , date] 
+    # Weather data can be joined [county_fip , date]
     ABT_V2 = pd.merge(
         ABT_V1,
         weather_df,
@@ -123,21 +124,19 @@ def join_all_data():
         right_on=["county_fip", "date"],
         suffixes=("", "_dropMe"),
     )
-    ABT_V2.drop(
-        ABT_V2.filter(regex="_dropMe$").columns.tolist(), axis=1, inplace=True
-    )
+    ABT_V2.drop(ABT_V2.filter(regex="_dropMe$").columns.tolist(), axis=1, inplace=True)
     print("Added Weather data:")
     print(f"ABT.shape ={ABT_V2.shape}")
 
     # -------------------------------------------------------------------------------
     # STEP 4: Add Census data
     # Census data is using state_fips as the prefix to the full fips AND county fips the suffix
-    # We need to parse these from county_fip to do the join 
+    # We need to parse these from county_fip to do the join
     fips_id = ABT_V2.county_fip.apply(str)
     ABT_V2["state_fip"] = fips_id.apply(parse_state).apply(int)
     ABT_V2["proxy_fip"] = fips_id.apply(parse_county).apply(int)
 
-    # JOIN left : 
+    # JOIN left :
     ABT_V3 = pd.merge(
         ABT_V2,
         ACS_full_df,
@@ -146,21 +145,19 @@ def join_all_data():
         right_on=["state_fips", "county_fips"],
         suffixes=("", "_dropMe"),
     )
-    ABT_V3.drop(
-        ABT_V3.filter(regex="_dropMe$").columns.tolist(), axis=1, inplace=True
-    )
-   
+    ABT_V3.drop(ABT_V3.filter(regex="_dropMe$").columns.tolist(), axis=1, inplace=True)
+
     # drop proxy_fip & state fips & county fips
     del ABT_V3["proxy_fip"]
     del ABT_V3["Unnamed: 0"]
-    
+
     print("Added Census data:")
     print(f"ABT.shape ={ABT_V3.shape}")
-    
+
     # -------------------------------------------------------------------------------
-    
+
     # STEP 5: Add Unemployment Data
-    # Join on [county_fip, date] 
+    # Join on [county_fip, date]
     ABT_V4 = pd.merge(
         ABT_V3,
         DoL_df,
@@ -169,35 +166,36 @@ def join_all_data():
         right_on=["county_fip", "date"],
         suffixes=("", "_dropMe"),
     )
-    ABT_V4.drop(
-        ABT_V4.filter(regex="_dropMe$").columns.tolist(), axis=1, inplace=True
-    )
+    ABT_V4.drop(ABT_V4.filter(regex="_dropMe$").columns.tolist(), axis=1, inplace=True)
     print("Added Unemployment data:")
     print(f"ABT.shape ={ABT_V4.shape}")
 
-     # -------------------------------------------------------------------------------
-    
-    # STEP 5 : Add Tracking data 
-    # Ensure columns have the same data type 
+    # -------------------------------------------------------------------------------
+
+    # STEP 5 : Add Tracking data
+    # Ensure columns have the same data type
     ABT_V4["date"] = pd.to_datetime(ABT_V4["date"].apply(str)).dt.date
-    
-    # Left join on state_fip and date in ABT_V4 to cov_fips and cov_date in tracking df 
-    ABT_V5 = pd.merge(ABT_V4 ,tracking_df, 
-                      how = "left" , 
-                      left_on = ["state_fip","date"] , 
-                      right_on = ["cov_fips","cov_date"],
-                      suffixes=('', '_dropMe')
-                     )
-    
-    ABT_V5.drop(ABT_V5.filter(regex='_dropMe$').columns.tolist(),axis=1, inplace=True)
-    ABT_V5.drop(["cov_date","cov_fips"],axis = 1, inplace=True ) 
+
+    # Left join on state_fip and date in ABT_V4 to cov_fips and cov_date in tracking df
+    ABT_V5 = pd.merge(
+        ABT_V4,
+        tracking_df,
+        how="left",
+        left_on=["state_fip", "date"],
+        right_on=["cov_fips", "cov_date"],
+        suffixes=("", "_dropMe"),
+    )
+
+    ABT_V5.drop(ABT_V5.filter(regex="_dropMe$").columns.tolist(), axis=1, inplace=True)
+    ABT_V5.drop(["cov_date", "cov_fips"], axis=1, inplace=True)
 
     print("Added Testing data:")
     print(f"ABT.shape ={ABT_V5.shape}")
     return ABT_V5
 
+
 # ------- Helper Functions ------- #
-# county_fip is composed of state fips & county fips 
+# county_fip is composed of state fips & county fips
 # if county_fip is 4 numbers (ABCD) then -> state fip is A & county_fips is BCD
 # if county_fip is 5 numbers (ABCDE) the -> state fip is AB & county_fips is CDE
 def parse_state(county_fips):
@@ -211,12 +209,13 @@ def parse_state(county_fips):
     if len_fip == 5:
         return county_fips[0:2]
 
+
 def parse_county(county_fips):
     # get county_fips(suffix)
     len_fip = len(county_fips)
     if len_fip == 1:
-        #missing 
-        return -1 
+        # missing
+        return -1
     if len_fip == 4:
         return county_fips[1:]
     if len_fip == 5:
@@ -226,67 +225,65 @@ def parse_county(county_fips):
 if __name__ == "__main__":
 
     # Import data:
-    intermediate_directory = os.path.abspath("data/intermediate")
+    intermediate_directory = DATA_DIR / "intermediate"
 
-    # CDC Data 
+    # CDC Data
     file_name = "CDC_full_data.csv"
     CDC_df = pd.read_csv(f"{intermediate_directory}/{file_name}")
 
-    # Polic data 
+    # Polic data
     file_name = "Policy_ABT.csv"
     Policy_df = pd.read_csv(f"{intermediate_directory}/{file_name}")
 
-    # Mobility data 
+    # Mobility data
     file_name = "US_mobility_data.csv"
     Mobility_df = pd.read_csv(f"{intermediate_directory}/{file_name}")
     # Weather data
-    data_directory = os.path.abspath("data")
     file_name = "weather_by_county_fips.csv"
-    weather_df = pd.read_csv(f"{data_directory}/{file_name}", error_bad_lines=False)
+    weather_df = pd.read_csv(f"{DATA_DIR}/{file_name}", error_bad_lines=False)
 
-    # Census data 
+    # Census data
     file_name = "ACS_full.csv"
     ACS_full_df = pd.read_csv(f"{intermediate_directory}/{file_name}")
 
     # Uneployment data
     file_name = "DoL_daily_county.csv"
-    DoL_df = pd.read_csv(f"{data_directory}/{file_name}", error_bad_lines=False)
+    DoL_df = pd.read_csv(f"{DATA_DIR}/{file_name}", error_bad_lines=False)
 
-    # Clean uneployment: 
+    # Clean uneployment:
     DoL_df.rename(
         inplace=True,
         columns={"Date": "date", "County Name": "county", "State": "state"},
     )
     # Drop State Code -> already exists as state_code
     del DoL_df["State Code"]
-
-
-    # Import tracking data: 
-    tracking_df = pd.read_csv('/Users/aiguestuser/Repositories/emer2gent-covid19/data/covidtracking.csv')
+    # Import tracking data:
+    tracking_df = pd.read_csv(DATA_DIR / "covidtracking.csv")
     print(f"tracking_df.shape ={tracking_df.shape}")
     tracking_df.columns = [f"cov_{k}" for k in tracking_df.columns]
     tracking_df["cov_date"] = pd.to_datetime(tracking_df["cov_date"].apply(str)).dt.date
-    
+
     keep = [
-    "cov_date",
-    "cov_fips",
-    "cov_positive", 
-    'cov_negative' ,
-    "cov_hospitalizedCurrently",
-    "cov_total" ,
-    "cov_totalTestResults"
+        "cov_date",
+        "cov_fips",
+        "cov_positive",
+        "cov_negative",
+        "cov_hospitalizedCurrently",
+        "cov_total",
+        "cov_totalTestResults",
     ]
-    # filter keep columns from  tracking data : 
-    tracking_df = tracking_df.loc[:,tracking_df.columns.isin(keep)] 
+    # filter keep columns from  tracking data :
+    tracking_df = tracking_df.loc[:, tracking_df.columns.isin(keep)]
 
     # Get ABT
     ABT_final = join_all_data()
-   
+
+    # add daty of week feature (Monday is 0 ... Sunday is 6)
+    ABT_final["day_of_week"] = pd.to_datetime(ABT_final["date"]).dt.dayofweek
+
     # Export Data
-    check_directory = os.path.abspath("data/intermediate")
-    if not os.path.exists(check_directory):
-        os.makedirs(check_directory)
+    PROCESSED_DIR = DATA_DIR / "processed"
+    PROCESSED_DIR.mkdir(exist_ok=True)
 
     # Export CDC_full_df to csv
-    file_name = "ABT_V1.csv"
-    ABT_final.to_csv(f"{check_directory}/{file_name}", index=False)
+    ABT_final.to_csv(PROCESSED_DIR / "ABT_V1.csv", index=False)
