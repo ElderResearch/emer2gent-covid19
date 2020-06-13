@@ -1,7 +1,7 @@
 ---
 title:  "Regression Model Development"
 author: "Tom Shafer"
-date:   "6/11/2020"
+date:   "2020-06-11, updated 2020-06-13"
 output: html_document
 ---
 
@@ -10,7 +10,7 @@ r_root <- rprojroot::find_rstudio_root_file()
 
 knitr::opts_knit$set(root.dir = file.path(r_root))
 knitr::opts_chunk$set(warning = FALSE, message = FALSE, dpi = 100)
-knitr::opts_chunk$set(fig.width = 7, fig.height = 5)
+knitr::opts_chunk$set(fig.width = 8, fig.height = 8)
 
 ggplot2::theme_set(ggplot2::theme_minimal())
 ```
@@ -51,6 +51,8 @@ plan(multiprocess)
 - [x] Look at trajectories
 - [ ] Add deltas
 - [ ] Add restriction loosening
+- [ ] Add day-of-week encoding
+- [ ] Add time since first retriction
 
 - [x] Choose features
 - [ ] Do residual analysis
@@ -64,14 +66,21 @@ plan(multiprocess)
 - Negative-binomial model
 - No zero inflation for now, having excluded many zeros
 - Interacting time with policy is important
-- 
+- Unclear if we should include economic data, small effects and 
+  potential for confounding
+- Unclear if we should include mobility data, large effect and helps to fit 
+  but seems to confound policy
+
+We might fit two models, one with random slopes and one without.
+We should also look at how the policy coefficients move around with 
+cofactors, especially if the cofactors do not change OOS performance.
 
 ---
 
 # Setup and helper functions
 
-Set `FORCE_MODEL_RUN <- TRUE` to re-run all calculations, even if a cached
-version is available.
+Set `FORCE_MODEL_RUN <- TRUE` to re-run all calculations, 
+even if a cached version is available.
 
 ```{r}
 RANDOM_SEED <- -461698
@@ -1282,7 +1291,7 @@ s2_pol_bl <- cache_operation(
 
 ### Stats tables
 
-```{r, eval=F}
+```{r}
 s2_pol_bl %>% extract_cv_glance()
 s2_pol_bl %>% extract_cv_perf()
 s2_pol_bl %>% extract_cv_tidy()
@@ -1290,14 +1299,14 @@ s2_pol_bl %>% extract_cv_tidy()
 
 ### Fit charts
 
-```{r, eval=F}
+```{r}
 plot_models(s2_pol_bl$object)
 plot_model(s2_pol_bl$object[[1]], type = "resid")
 plot_model(s2_pol_bl$object[[1]], type = "diag")
 ```
 
 ```{r}
-plot_model(s2_pol_bl$object[[1]], type = "re")[[2]]  # state-level
+plot_model(s2_pol_bl$object[[1]], type = "re")
 ```
 
 ### Trajectory plots
@@ -1314,11 +1323,12 @@ s2_pol_bl %>%
 
 ---
 
-## 1. Policy plus key covariates
+## 1. Introduce key covariates
 
 New covariates:
 
  - Time since first reported infection
+ - Day of the week
  - Population and population density
  - Demographics
  - COVID-19 testing
@@ -1331,6 +1341,7 @@ s2_pol_cov <- cache_operation(
      formula = target ~ 1 + 
        policy_recoded + 
        time_days_since_inf1 + 
+       time_dow_x + time_dow_y + 
        acs_pop_total + pop_density + 
        acs_race_minority + 
        acs_gender_female + 
@@ -1345,14 +1356,13 @@ s2_pol_cov <- cache_operation(
 
 ### Stats tables
 
-This helps tremendously, with $R^2 = 0.60(16)$ on held out data.
+This helps tremendously, with $R^2 = 0.65(15)$ on held out data.
 
-```{r, eval=F}
+```{r}
 extract_cv_glance(s2_pol_bl, s2_pol_cov)
 extract_cv_perf(s2_pol_bl, s2_pol_cov)
 
-s2_pol_cov %>% 
-  extract_cv_tidy()
+s2_pol_cov %>% extract_cv_tidy()
 ```
 
 ### Fit charts
@@ -1360,219 +1370,31 @@ s2_pol_cov %>%
  - Results are consistent
  - Right now, all policies are mainly correlated with rising cases, which
    really suggests we haven't captured the effects yet
+ - Day of week doesn't help
 
-```{r, eval=F}
+```{r}
 plot_models(s2_pol_cov$object, dot.size = 2)
-plot_model(s2_pol_cov$object[[1]], type = "re")[[2]]  # state-level
+plot_model(s2_pol_cov$object[[1]], type = "resid")
+plot_model(s2_pol_cov$object[[1]], type = "diag")
+```
+
+```{r}
+plot_model(s2_pol_cov$object[[1]], type = "re")
 ```
 
 ### Trajectory plots
 
-```{r, eval=F}
+```{r}
 s2_pol_cov %>% 
   cv_extract_preds(.per_fold = 2, seed = RANDOM_SEED) %>% 
   plot_w_policy()
 ```
 
-## Policy with policy-time interactions
-
-- policy and time (policy impact over time)
-
-Still thinking about mobility.
-
-```{r}
-s2_pol_cov1_it <- here("data/ts_model_s2_pol_kcov_it.rds") %>%
-  cache_operation({
-    run_model_vfold(
-     formula = target ~ 1 + 
-       policy_recoded + 
-       time_days_since_inf1 + 
-       acs_pop_total + 
-       acs_race_minority + 
-       acs_gender_female + 
-       acs_median_hh_inc_10k + 
-       acs_age_le_24 + acs_age_25_54 + acs_age_55_84 + acs_age_85_ge + 
-       cov_total_tests + cov_pos_tests_frac + 
-       policy_recoded:time_days_since_inf1 + 
-       (1 | state_code/county_fip),
-     data = sample2_abt
-    )
-  })
-```
-
-### Stats tables
-
-```{r, eval=F}
-s2_pol_cov1_it %>% extract_cv_glance()
-s2_pol_cov1_it %>% extract_cv_perf()
-
-s2_pol_cov1_it %>% 
-  extract_cv_tidy() %>% 
-  print(n = Inf)
-```
-
-### Fit charts
-
-```{r, eval=F}
-plot_models(s2_pol_cov1_econ_mob_it$object, dot.size = 2)
-plot_model(s2_pol_cov1_econ_mob_it$object[[1]], type = "re")[[2]]  # state-level
-```
-
-```{r, eval=F}
-diags_ <- plot_model(s2_pol_cov1_econ_mob_it$object[[1]], type = "diag")
-resids_ <- plot_model(s2_pol_cov1_econ_mob_it$object[[1]], type = "resid")
-print(resids_)
-```
-
-
-### Trajectory plots
-
-```{r, eval=F}
-set.seed(RANDOM_SEED)
-
-s2_pol_cov1_econ_mob_it_ex <- s2_pol_cov1_econ_mob_it %>% 
-  cv_extract_preds(.per_fold = 2)
-
-plot_w_policy(s2_pol_cov1_econ_mob_it_ex)
-```
-
 ---
 
-## Model simplification
+## 2. Policy with economics
 
-cf. statistical rethinking:
-
- - post-treatment bias (mobility, economy)
- - masking relationships (gender? ages?)
- - center all the not-centered predictors
- - Gelman rescaling
- 
-```{r}
-s2_pol_simpler <- here("data/ts_model_s2_pol_simpler.rds") %>%
-  cache_operation({
-    run_model_vfold(
-     formula = target ~ 1 + 
-       policy_recoded + 
-       time_days_since_inf1 + 
-       acs_pop_total + 
-       acs_race_minority + 
-       # acs_gender_female + 
-       acs_median_hh_inc_10k + 
-       # acs_age_le_24 + acs_age_25_54 + acs_age_55_84 + acs_age_85_ge + 
-       cov_total_tests + cov_pos_tests_frac + 
-       policy_recoded:time_days_since_inf1 + 
-       (1 | state_code/county_fip),
-     data = sample2_abt
-    )
-  })
-```
-
-```{r}
-s2_pol_simpler %>% extract_cv_glance()
-s2_pol_simpler %>% 
-  extract_cv_tidy() %>% 
-  print(n = Inf)
-```
-
-
-## More time
-
-cf. statistical rethinking:
-
- - post-treatment bias (mobility, economy)
- - masking relationships (gender? ages?)
- - center all the not-centered predictors
- - Gelman rescaling
- 
-```{r}
-s2_pol_simpler_it <- here("data/ts_model_s2_pol_simpler_it.rds") %>%
-  cache_operation({
-    run_model_vfold(
-     formula = target ~ 1 + 
-       policy_recoded + 
-       time_days_since_inf1 + 
-       acs_pop_total:time_days_since_inf1 + 
-       acs_race_minority:time_days_since_inf1 + 
-       # acs_gender_female + 
-       acs_median_hh_inc_10k:time_days_since_inf1 + 
-       # acs_age_le_24 + acs_age_25_54 + acs_age_55_84 + acs_age_85_ge + 
-       cov_total_tests + cov_pos_tests_frac + 
-       policy_recoded:time_days_since_inf1 + 
-       (1 | state_code/county_fip),
-     data = sample2_abt
-    )
-  })
-```
-
-```{r}
-s2_pol_simpler_it %>% extract_cv_glance()
-s2_pol_simpler_it %>% 
-  extract_cv_tidy() %>% 
-  print(n = Inf)
-```
-
-
-## Random time slopes
-
- 
-```{r}
-s2_pol_simpler_rt <- here("data/ts_model_s2_pol_simpler_rt.rds") %>%
-  cache_operation({
-    run_model_vfold(
-     formula = target ~ 1 + 
-       policy_recoded + 
-       time_days_since_inf1 + 
-       acs_pop_total + 
-       acs_race_minority + 
-       acs_gender_female +
-       acs_median_hh_inc_10k + 
-       acs_age_le_24 + acs_age_25_54 + acs_age_55_84 + acs_age_85_ge +
-       cov_total_tests + cov_pos_tests_frac + 
-       policy_recoded:time_days_since_inf1 + 
-       (1 + time_days_since_inf1 | state_code/county_fip),
-     data = sample2_abt
-    )
-  })
-```
-
-```{r}
-s2_pol_simpler_rt %>% extract_cv_glance()
-s2_pol_simpler_rt %>% 
-  extract_cv_tidy() %>% 
-  print(n = Inf)
-```
-
- 
-```{r}
-s2_pol_simpler_rt_complex <- here("data/ts_model_s2_pol_simpler_rt_complex.rds") %>%
-  cache_operation({
-    run_model_vfold(
-     formula = target ~ 1 + 
-       policy_recoded + 
-       time_days_since_inf1 + 
-       acs_pop_total + 
-       acs_race_minority + 
-       acs_gender_female +
-       acs_median_hh_inc_10k + 
-       acs_age_le_24 + acs_age_25_54 + acs_age_55_84 + acs_age_85_ge +
-       cov_total_tests + cov_pos_tests_frac + 
-       policy_recoded:time_days_since_inf1 + 
-       (1 + time_days_since_inf1 + policy_recoded:time_days_since_inf1 | state_code/county_fip),
-     data = sample2_abt
-    )
-  })
-```
-
-```{r}
-s2_pol_simpler_rt_complex %>% extract_cv_glance()
-s2_pol_simpler_rt_complex %>% 
-  extract_cv_tidy() %>% 
-  print(n = Inf)
-```
-
----
-
-## Policy with economics
+**NB:** This was without pop_density.
 
 ```{r}
 s2_pol_cov1_econ <- here("data/ts_model_s2_pol_cov_econ.rds") %>%
@@ -1594,54 +1416,47 @@ s2_pol_cov1_econ <- here("data/ts_model_s2_pol_cov_econ.rds") %>%
   })
 ```
 
-```{r}
-s2_pol_cov1_econ %>% extract_cv_glance()
-s2_pol_cov1_econ %>% 
-  extract_cv_tidy() %>% 
-  print(n = Inf)
-```
-
 ### Stats tables
 
- - The CCC and R-squared values either went down or became very uncertain.
+```{r}
+# Compare to models without time interactions, to be on equal footing
+extract_cv_glance(s2_pol_cov1_econ, s2_pol_cov)
+extract_cv_perf(s2_pol_cov1_econ, s2_pol_cov)
 
-```{r, eval=F}
-
-s2_pol_cov1_econ %>% extract_cv_glance()
-s2_pol_cov1 %>% extract_cv_glance()
-
-s2_pol_cov1_econ %>% extract_cv_perf()
-s2_pol_cov1 %>% extract_cv_perf()
-
-s2_pol_cov1_econ %>% extract_cv_tidy()
+# Very small effects
+s2_pol_cov1_econ %>% 
+  extract_cv_tidy()
 ```
 
 ### Fit charts
 
- - Results are consistent
- - The female proportion results are confusing
- - Right now, all policies are correlated with rising cases, which
-   really suggests we haven't captured it yet
-
-```{r, eval=F}
+```{r}
 plot_models(s2_pol_cov1_econ$object, dot.size = 2)
-plot_model(s2_pol_cov1_econ$object[[1]], type = "re")[[2]]  # state-level
+
+plot_model(s2_pol_cov1_econ$object[[1]], type = "diag")
+plot_model(s2_pol_cov1_econ$object[[1]], type = "resid")
+```
+
+```{r}
+plot_model(s2_pol_cov1_econ$object[[1]], type = "re")
+```
+
+```{r}
+fixef(s2_pol_cov1_econ$object[[1]]) %>% as_vector() %>% enframe()
+ranef(s2_pol_cov1_econ$object[[1]]) %>% as_tibble()
 ```
 
 ### Trajectory plots
 
-```{r, eval=F}
-set.seed(RANDOM_SEED)
-
-s2_pol_cov1_econ_ex <- s2_pol_cov1_econ %>% cv_extract_preds(.per_fold = 2)
-plot_w_policy(s2_pol_cov1_econ_ex)
+```{r}
+s2_pol_cov1_econ %>% 
+  extract_cv_trajectories(.per_fold = 2, seed = RANDOM_SEED) %>% 
+  plot_w_policy()
 ```
 
 ---
 
-## Policy with mobility
-
-The econ was good enough to keep.
+## 3. Policy with mobility
 
 ```{r}
 s2_pol_cov1_econ_mob <- here("data/ts_model_s2_pol_cov_econ_mob.rds") %>%
@@ -1664,85 +1479,332 @@ s2_pol_cov1_econ_mob <- here("data/ts_model_s2_pol_cov_econ_mob.rds") %>%
   })
 ```
 
-```{r}
-s2_pol_cov1_econ_mob %>% extract_cv_glance()
-s2_pol_cov1_econ_mob %>% 
-  extract_cv_tidy() %>% 
-  print(n = Inf)
-```
-
-
 ### Stats tables
 
-Better!
+```{r}
+# Compare to models without time interactions, to be on equal footing
+extract_cv_glance(s2_pol_cov1_econ_mob, s2_pol_cov)
+extract_cv_perf(s2_pol_cov1_econ_mob, s2_pol_cov)
 
-```{r, eval=F}
-s2_pol_cov1_econ_mob %>% extract_cv_glance()
-s2_pol_cov1_econ_mob %>% extract_cv_perf()
+# Very small effects
 s2_pol_cov1_econ_mob %>% extract_cv_tidy()
 ```
 
 ### Fit charts
 
- - Results are consistent
-   - 85+ needs to go
- - Still confusing correlations with causation, esp. with mobility
-   (add imputation flag?)
- - By including mobility, which is heavily influenced by policy, 
-   the policy signals are disappearing.
-
-```{r, eval=F}
+```{r}
 plot_models(s2_pol_cov1_econ_mob$object, dot.size = 2)
-plot_model(s2_pol_cov1_econ_mob$object[[1]], type = "re")[[2]]  # state-level
+
+# Only look at 1st CV fold
+plot_model(s2_pol_cov1_econ_mob$object[[1]], type = "diag")
+plot_model(s2_pol_cov1_econ_mob$object[[1]], type = "resid")
+```
+
+```{r}
+# Only look at 1st CV fold
+plot_model(s2_pol_cov1_econ_mob$object[[1]], type = "re")
+```
+
+```{r}
+# Only look at 1st CV fold
+fixef(s2_pol_cov1_econ_mob$object[[1]]) %>% as_vector() %>% enframe()
+ranef(s2_pol_cov1_econ_mob$object[[1]]) %>% as_tibble()
 ```
 
 ### Trajectory plots
 
-```{r, eval=F}
-set.seed(RANDOM_SEED)
-
-s2_pol_cov1_econ_mob_ex <- s2_pol_cov1_econ_mob %>% cv_extract_preds(.per_fold = 2)
-plot_w_policy(s2_pol_cov1_econ_mob_ex)
+```{r}
+s2_pol_cov1_econ_mob %>% 
+  extract_cv_trajectories(.per_fold = 2, seed = RANDOM_SEED) %>% 
+  plot_w_policy()
 ```
 
 ---
 
+## 4. Policy-time interactions
 
+Allow policy to interact with time through a term
 
+$$
+\frac{\partial^2 y}{\partial t \partial p} = 
+  \frac{\partial}{\partial p}\frac{\partial y}{\partial t}
+$$
+that attempts to capture how the rate of progression changes with policy.
 
-
-
-
-
-
-
-## Pol with simple confounding interactions
-
- - policy and population (urban, rural)
- - policy and race, wealth
- - covid test acceleration?
- - demo
- - 
+**NB:* This was run before pop. density or day of week were included.
 
 ```{r}
-
+s2_pol_cov1_it <-  cache_operation(
+  here("data/ts_model_s2_pol_kcov_it_200613.rds"), {
+    run_model_vfold(
+     formula = target ~ 1 + 
+       policy_recoded + 
+       time_days_since_inf1 + 
+       acs_pop_total + pop_density + 
+       acs_race_minority + 
+       acs_gender_female + 
+       acs_median_hh_inc_10k + 
+       acs_age_le_24 + acs_age_25_54 + acs_age_55_84 + acs_age_85_ge + 
+       cov_total_tests + cov_pos_tests_frac + 
+       # This is the new interaction
+       policy_recoded:time_days_since_inf1 + 
+       (1 | state_code/county_fip),
+     data = sample2_abt
+    )
+  })
 ```
 
+### Stats tables
 
+No clear harm to the model fit, but no real imprevent either.
 
+```{r}
+extract_cv_glance(s2_pol_cov, s2_pol_cov1_it)
+extract_cv_perf(s2_pol_cov, s2_pol_cov1_it)
 
+s2_pol_cov1_it %>% 
+  extract_cv_tidy() %>% 
+  print(n = Inf)
+```
 
+### Fit charts
 
+```{r}
+plot_models(s2_pol_cov1_it$object, dot.size = 2)
+```
 
+```{r}
+# CV fold 1 only
+plot_model(s2_pol_cov1_it$object[[1]], type = "diag")
+plot_model(s2_pol_cov1_it$object[[1]], type = "resid")
+plot_model(s2_pol_cov1_it$object[[1]], type = "re")
+```
+
+### Trajectory plots
+
+```{r}
+s2_pol_cov1_it %>% 
+  extract_cv_trajectories(.per_fold = 2, seed = RANDOM_SEED) %>% 
+  plot_w_policy()
+```
 
 ---
 
-# Residual analysis
+## 5. More time interactions
 
-Start from the model and look at transformations.
+We ask whether race, income, or pop. density affect the trajectory.
 
+```{r}
+s2_pol_cov1_it2 <- cache_operation(here("data/ts_model_s2_pol_simpler_it.rds"), {
+    run_model_vfold(
+     formula = target ~ 1 + 
+       policy_recoded + 
+       time_days_since_inf1 + 
+       acs_pop_total + pop_density + 
+       acs_race_minority + 
+       acs_gender_female + 
+       acs_median_hh_inc_10k + 
+       acs_age_le_24 + acs_age_25_54 + acs_age_55_84 + acs_age_85_ge + 
+       cov_total_tests + cov_pos_tests_frac + 
+       policy_recoded:time_days_since_inf1 + 
+       # These are the new interactions
+       acs_median_hh_inc_10k:time_days_since_inf1 + 
+       acs_race_minority:time_days_since_inf1 + 
+       pop_density:time_days_since_inf1 + 
+       (1 | state_code/county_fip),
+     data = sample2_abt
+    )
+  })
+```
+
+### Stats tables
+
+Out-of-sample we are marginally, but nowhere near significantly, better.
+
+```{r}
+extract_cv_glance(s2_pol_cov1_it2, s2_pol_cov1_it)
+extract_cv_perf(s2_pol_cov1_it2, s2_pol_cov1_it)
+
+s2_pol_cov1_it2 %>% 
+  extract_cv_tidy() %>% 
+  print(n = Inf)
+```
+
+### Fit charts
+
+```{r}
+plot_models(s2_pol_cov1_it2$object, dot.size = 2)
+
+plot_model(s2_pol_cov1_it2$object[[1]], type = "diag")
+plot_model(s2_pol_cov1_it2$object[[1]], type = "resid")
+```
+
+```{r}
+plot_model(s2_pol_cov1_it2$object[[1]], type = "re")
+```
+
+### Trajectory plots
+
+```{r}
+s2_pol_cov1_it2 %>% 
+  extract_cv_trajectories(.per_fold = 2, seed = RANDOM_SEED) %>% 
+  plot_w_policy()
+```
+
+---
+
+## 6. Random slopes with time
+
+**NB:** A model with random slope interactions didn't converge.
+
+```{r}
+s2_pol_simpler_rt <- here("data/ts_model_s2_pol_simpler_rt_200613.rds") %>%
+  cache_operation({
+    run_model_vfold(
+     formula = target ~ 1 + 
+       policy_recoded + 
+       time_days_since_inf1 + 
+       acs_pop_total + 
+       acs_race_minority + 
+       acs_gender_female +
+       acs_median_hh_inc_10k + 
+       acs_age_le_24 + acs_age_25_54 + acs_age_55_84 + acs_age_85_ge +
+       cov_total_tests + cov_pos_tests_frac + 
+       policy_recoded:time_days_since_inf1 + 
+       (1 + time_days_since_inf1 | state_code/county_fip),
+     data = sample2_abt
+    )
+  })
+```
+
+### Stats tables
+
+Massive improvement in model fit metrics, and reasonable improvement
+in out-of-sample metrics,.
+
+```{r}
+extract_cv_glance(s2_pol_simpler_rt, s2_pol_cov1_it)
+extract_cv_perf(s2_pol_simpler_rt, s2_pol_cov1_it)
+
+s2_pol_simpler_rt %>% 
+  extract_cv_tidy() %>% 
+  print(n = Inf)
+```
+
+### Fit charts
+
+```{r}
+plot_models(s2_pol_simpler_rt$object, dot.size = 2)
+```
+
+```{r}
+# Only looking at CV fold 1
+plot_model(s2_pol_simpler_rt$object[[1]], type = "diag")
+plot_model(s2_pol_simpler_rt$object[[1]], type = "resid")
+plot_model(s2_pol_simpler_rt$object[[1]], type = "re")
+```
+
+```{r}
+fixef(s2_pol_simpler_rt$object[[1]]) %>% as_vector() %>% enframe()
+ranef(s2_pol_simpler_rt$object[[1]]) %>% as_tibble()
+```
+
+### Trajectory plots
+
+```{r}
+s2_pol_simpler_rt %>% 
+  extract_cv_trajectories(.per_fold = 2, seed = RANDOM_SEED) %>% 
+  plot_w_policy()
+```
+
+---
+
+## 7. For Carlos: No population
+
+```{r}
+s2_pol_cov_nopop <- cache_operation(
+  here("data/ts_model_s2_pol_kcov_nopop.rds"), {
+    run_model_vfold(
+     formula = target ~ 1 + 
+       policy_recoded + 
+       time_days_since_inf1 + 
+       time_dow_x + time_dow_y + 
+       pop_density + 
+       acs_race_minority + 
+       acs_gender_female + 
+       acs_median_hh_inc_10k + 
+       acs_age_le_24 + acs_age_25_54 + acs_age_55_84 + acs_age_85_ge + 
+       cov_total_tests + cov_pos_tests_frac + 
+       (1 | state_code/county_fip),
+     data = sample2_abt
+    )
+  })
+```
+
+### Stats tables
+
+- No big changes in fit stats, except that the across-fold SD drops way down.
+- The nopop model has worse out-of-sample accuracy b/c we've elimintated
+  a shared effect that goes into the model.
+
+```{r}
+# Compare to sibling model
+extract_cv_glance(s2_pol_cov, s2_pol_cov_nopop)
+extract_cv_perf(s2_pol_cov, s2_pol_cov_nopop)
+```
+
+```{r}
+# Comparison plots
+extract_cv_perf(s2_pol_cov, s2_pol_cov_nopop) %>% 
+  pivot_longer(mean_train:sd_test, names_to = c("measure", "part"), names_sep = "_") %>%
+  pivot_wider(names_from = "measure") %>% 
+  mutate(
+    part = factor(
+      if_else(part == "train", "Train", "Test"), 
+      levels = c("Train", "Test")
+    ),
+    metric = case_when(
+      metric %in% c("ccc", "mae") ~ str_to_upper(metric),
+      metric == "rsq" ~ "R-squared",
+      TRUE ~ str_to_title(metric)
+    ),
+    model = if_else(model == "s2_pol_cov", "With pop.", "Without pop.")
+  ) %>% 
+  ggplot(aes(part, mean, color = model)) + 
+  geom_point(position = position_dodge(width = 0.2)) + 
+  geom_errorbar(
+    aes(ymin = mean - 2 * sd, ymax = mean + 2 * sd), 
+    width = 0.2, position = position_dodge(width = 0.2)
+  ) + 
+  facet_wrap(~ metric, scales = "free_y") + 
+  labs(x = NULL, y = "CV-averaged performance") + 
+  ylim(0, NA)
+```
+
+```{r}
+extract_cv_tidy(s2_pol_cov, s2_pol_cov_nopop) %>% 
+  select(model, term, mean = estimate, sd = std.error) %>% 
+  mutate(
+    model = if_else(model == "s2_pol_cov", "With pop.", "Without pop.")
+  ) %>% 
+  ggplot(aes(term, mean, color = model)) + 
+  geom_point(position = position_dodge(0.8)) + 
+  geom_errorbar(
+    aes(ymin = mean - 2 * sd, ymax = mean + 2 * sd), 
+    position = position_dodge(0.8), width = 0.2
+  ) + 
+  coord_flip(ylim = c(-3.5, 3.5))
+```
+
+### Fit charts
+
+```{r}
+plot_models(s2_pol_cov_nopop$object, dot.size = 2)
+```
+
+---
 
 ```{r, include=F, echo=F}
-# Shut down multisession
+# Shutdown the multisession
 plan(sequential)
 ```
