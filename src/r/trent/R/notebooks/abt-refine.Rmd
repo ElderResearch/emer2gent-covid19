@@ -42,10 +42,10 @@ suppressPackageStartupMessages({
 
 ```{r}
 # determine absolute path to the overall **project** data directory
-proj_data_path <- path_abs(path("..", "..", "..", 'data'))
+proj_data_path <- path_abs(path("..", "..", "..", 'data', "processed"))
 
 # Use vroom and match read.csv introduction of "." in place of " "
-d <- vroom::vroom(list.files(proj_data_path, pattern = 'ABT', full.names=TRUE)) %>% 
+d <- vroom(list.files(proj_data_path, pattern = 'ABT', full.names = TRUE)) %>% 
   rename_with(~ str_replace_all(., " ", ".")) %>%
   rename_all(tolower) %>%
   rename_all(~ gsub('\\.', '_', .)) %>%
@@ -717,6 +717,36 @@ dd <- dd %>%
 
 stopifnot(all(!is.na(dd$cov_pos_tests)))
 stopifnot(all(!is.na(dd$cov_total_tests)))
+```
+
+---
+
+## Population density
+
+Seven counties have zero population density; impute the state-level value.
+
+```{r}
+dd %>% 
+  filter(is.na(pop_density)) %>% 
+  distinct(state_code, county_fip, county, acs_pop_total, pop_density)
+```
+
+```{r}
+pd_impute <- dd %>% 
+  distinct(state_code, county_fip, pop_density, acs_pop_total, land_area) %T>% 
+  {filter(., is.na(land_area) | is.na(pop_density)) %>% print()} %>% 
+  na.omit() %>% 
+  group_by(state_code) %>% 
+  summarize(state_pop_density = sum(acs_pop_total) / sum(land_area), .groups = "drop")
+
+nrow_chk_ <- nrow(dd)
+dd <- dd %>% 
+  left_join(pd_impute, by = "state_code") %>% 
+  mutate(pop_density = if_else(is.na(pop_density), state_pop_density, pop_density)) %>% 
+  select(-state_pop_density)
+
+stopifnot(nrow(dd) == nrow_chk_)
+stopifnot(all(!is.na(dd$pop_density)))
 ```
 
 ---
