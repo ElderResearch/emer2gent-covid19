@@ -85,189 +85,8 @@ even if a cached version is available.
 ```{r}
 RANDOM_SEED <- -461698
 FORCE_MODEL_RUN <- FALSE
-```
 
-```{r}
-# Run a glmmTMB model via 5-fold cross-validation
-# Per fold, this returns:
-#  - the model object
-#  - a coefficients table
-#  - model summary table
-#  - training performance metrics
-#  - testing performance metrics
-#  - the held-out testing data (for, e.g., plotting)
-run_model_vfold <- function(formula, data, ziformula = ~0, seed = NULL) {
-  if (!is.null(seed))
-    set.seed(seed)
-  
-  group_vfold_cv(data, group = county_fip, v = 5) %>% 
-    future_pmap_dfr(~ {
-      tr <- training(.x)
-      te <- assessment(.x)
-      id <- .y
-      
-      message("Running fold: ", id)
-      
-      model <- glmmTMB(
-        formula, 
-        data = tr,
-        family = glmmTMB::nbinom2(), 
-        ziformula = ziformula)
-      
-      pred_tr <- predict(model, tr, type = "conditional")
-      pred_te <- predict(model, te, type = "conditional", allow.new.levels	= T)
-      
-      metrics_tr <- tribble(
-        ~ metric, ~ value,
-        "ccc",    ccc_vec(tr$target, pred_tr), 
-        "huber",  huber_loss_vec(tr$target, pred_tr), 
-        "mae",    mae_vec(tr$target, pred_tr), 
-        "rsq",    rsq_vec(tr$target, pred_tr)
-      )
-      
-      metrics_te <- tribble(
-        ~ metric, ~ value,
-        "ccc",    ccc_vec(te$target, pred_te), 
-        "huber",  huber_loss_vec(tr$target, pred_tr), 
-        "mae",    mae_vec(te$target, pred_te), 
-        "rsq",    rsq_vec(te$target, pred_te)
-      )
-  
-      tibble(
-        id = id,
-        object = list(model),
-        tidy = list(suppressMessages(broom.mixed:::tidy.glmmTMB(model))),
-        glance = list(suppressMessages(broom.mixed:::glance.glmmTMB(model))),
-        train = list(metrics_tr),
-        test = list(metrics_te),
-        test_data = list(te)
-      )
-  })
-}
-```
-
-```{r}
-# Extract model performance (train and test) from table(s) of CV results
-# Aggregate if necessary
-extract_cv_perf <- function(...) {
-  input_names <- map_chr(rlang::exprs(...), as.character)
-  inputs <- list(...)
-  
-  map2_dfr(inputs, input_names, ~ {
-    .df <- .x
-    .name <- .y
-    out <- imap_dfr(set_names(c("train", "test")), ~ {
-      .df %>%
-        select(id, all_of(.x)) %>%
-        unnest(all_of(.x)) %>%
-        mutate(partition = .y, .before = everything())
-      }) %>% 
-      group_by(partition, metric) %>%
-      summarize(mean = mean(value), sd = sd(value), .groups = "drop") %>%
-      pivot_wider(
-        id_cols = "metric",
-        names_from = "partition",
-        values_from = c("mean", "sd")
-      ) %>%
-      relocate(ends_with("train"), .after = "metric")
-    if (.name != ".") out <- mutate(out, model = .name, .after = "metric")
-    }) %>% 
-    arrange(metric)
-}
-
-# Extract model summary data from table(s) of CV results, aggregating if necessary
-extract_cv_glance <- function(...) {
-  input_names <- map_chr(rlang::exprs(...), as.character)
-  inputs <- list(...)
-  map2_dfr(inputs, input_names, ~ {
-    out <- .x %>% 
-      select(id, glance) %>% 
-      unnest(glance) %>% 
-      pivot_longer(-id, names_to = "metric") %>% 
-      group_by(metric) %>% 
-      summarize(mean = mean(value), sd = sd(value), .groups = "drop")
-    if (.y != ".") out <- mutate(out, model = .y, .after = "metric")
-    out
-    }) %>% 
-    arrange(metric)
-}
-
-# Extract model coefs data from table(s) of CV results, aggregating if necessary
-extract_cv_tidy <- function(...) {
-  input_names <- map_chr(rlang::exprs(...), as.character)
-  inputs <- list(...)
-  map2_dfr(inputs, input_names, ~ {
-    out <- .x %>% 
-      select(id, tidy) %>% 
-      unnest(tidy) %>% 
-      group_by(effect, component, group, term) %>% 
-      summarize(
-        estimate = mean(estimate),
-        std.error = sqrt(sum(std.error**2)),
-        .groups = "drop"
-      )
-    if (.y != ".") out <- mutate(out, model = .y, .before = "estimate")
-    out
-    }) %>% 
-    arrange(estimate)
-}
-
-# Extract random county-level predictions from a CV fit object
-extract_cv_trajectories <- function(data, .per_fold = 1L, seed = NULL) {
-  if (!is.null(seed))
-    set.seed(seed)
-  future_pmap_dfr(data, ~ {
-    model <- ..2
-    data  <- ..7
-    
-    # Sample random counties, then predict with the model
-    data %>% 
-      distinct(county_fip) %>% 
-      sample_n(.per_fold) %>% 
-      semi_join(data, ., by = "county_fip") %>%
-      mutate(
-        yhat = predict(model, ., allow.new.levels = T, type = "response")
-      )
-  })
-}
-```
-
-```{r}
-# Run an operation and save to disk
-# Load from disk instead of re-execute if the file exists
-cache_operation <- function(path, ...) {
-  if (!file.exists(path) | FORCE_MODEL_RUN) {
-    cat("Operation not cached; executing now\n")
-    saveRDS(..., path)
-  } else {
-    cat("Loading operation from cache:\n")
-    cat(glue("{path}\n"))
-  }
-  return(readRDS(path))
-}
-```
-
-```{r}
-# Show a model fit overlaid with policy windows
-plot_w_policy <- function(data) {
-  boxes <- data %>% 
-    group_by(state, county, policy_recoded) %>% 
-    summarize(start = min(date), end = max(date), .groups = "drop")
-  
-  data %>% 
-    select(date, state, county, target, policy_recoded, yhat) %>% 
-    pivot_longer(c(target, yhat)) %>% 
-    ggplot() + 
-    geom_rect(
-      aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf, fill = policy_recoded), 
-      data = boxes
-    ) + 
-    geom_line(aes(date, value, alpha = name, size = name)) +
-    facet_wrap(~ state + county, scales = "free") + 
-    scale_size_manual(values = c(0.5, 0.8)) + 
-    scale_alpha_manual(values = c(0.6, 1)) + 
-    scale_fill_viridis_d(alpha = 0.3)
-}
+source(here("R/helpers.R"))
 ```
 
 ---
@@ -275,8 +94,7 @@ plot_w_policy <- function(data) {
 # Data preparation
 
 ```{r load_data}
-abt_v1 <- vroom::vroom(here("data/abt_prepped.csv")) %>% 
-  rename_with(~ str_replace_all(., " ", "."))
+abt_v1 <- vroom::vroom(here("data/abt_prepped.csv"))
 ```
 
 ## Feature engineering
@@ -284,18 +102,8 @@ abt_v1 <- vroom::vroom(here("data/abt_prepped.csv")) %>%
 ### Days since first infection
 
 ```{r}
-abt_v2 <- abt_v1 %>% 
-  group_by(state_code, county_fip) %>% 
-  arrange(state_code, county_fip, date) %>% 
-  mutate(
-    time_days_since_inf1 = suppressWarnings(as.integer(date - min(date[confirmed > 0])))
-  ) %>% 
-  ungroup() %>% 
-  mutate(time_days_since_inf1 = if_else(
-    is.na(time_days_since_inf1) | time_days_since_inf1 < 0, 
-    -1L, 
-    time_days_since_inf1
-  ))
+abt_v2 <- abt_fe_time_days_since_inf1(abt_v1)
+summary(abt_v2$time_days_since_inf1)
 ```
 
 ### Median income
@@ -304,40 +112,8 @@ Units of $10K appear meaningful, but this is easy to change.
 
 ```{r}
 summary(abt_v2$acs_median_hh_inc_total)
-
-abt_v2 <- abt_v2 %>% 
-  mutate(
-    acs_median_hh_inc_10k = acs_median_hh_inc_total / 10000, 
-    .after = acs_median_hh_inc_total
-  ) %>% 
-  select(-acs_median_hh_inc_total)
-
+abt_v2 <- abt_fe_acs_median_hh_inc_10k(abt_v2)
 summary(abt_v2$acs_median_hh_inc_10k)
-```
-
-### Population
-
-We leave population alone for now, but a log transform is certainly possible.
-
-```{r}
-summary(abt_v2$acs_pop_total)
-```
-
-### Prior day's target
-
-If we want to model day-over-day growth.
-
-```{r}
-dim(abt_v2)
-
-abt_v2 <- abt_v2 %>% 
-  group_by(state_code, county_fip) %>% 
-  arrange(state_code, county_fip, date) %>% 
-  mutate(target_lag1 = target - lag(target, 1), .after = target) %>% 
-  ungroup() %>% 
-  filter(!is.na(target_lag1))
-
-dim(abt_v2)
 ```
 
 ---
@@ -349,16 +125,15 @@ dim(abt_v2)
 Subset to specific features:
 
 ```{r}
-# Named vector renames
+# Named vector components renames as well as choose
 keep_columns <- c(
   "date", 
   "state_code", "county_fip", "state", "county", 
   "target", 
   "policy_recoded" = "policy",
-  "time_dow", "time_wk_yr",
+  "time_dow", "time_wk_yr", "time_days_since_inf1",
   "tmpf_mean", "relh_mean", 
-  "pop_density", 
-  "acs_pop_total",
+  "pop_density", "acs_pop_total",
   "acs_age_le_24", "acs_age_25_34", "acs_age_35_44", "acs_age_45_54", 
   "acs_age_55_64", "acs_age_65_74", "acs_age_75_84", "acs_age_85_ge", 
   "acs_race_minority", 
@@ -371,7 +146,6 @@ keep_columns <- c(
   "mobility_transit_stations" = "transit_stations", 
   "mobility_workplaces" = "workplaces", 
   "mobility_residential" = "residential",
-  "time_days_since_inf1",
   "labor_force", "unemployed"
 )
 
@@ -419,7 +193,7 @@ abt_sub %>%
 
 ---
 
-## Feature standardization
+## Simple feature standardization
 
  - Fractions -> percentages
  - Other continuous features -> standardized
@@ -473,23 +247,15 @@ Boruta runs permutation tests against the input features using Random
 Forests to identify all _relevant_ features.
 
 ```{r}
-save_path <- here("data/ts_boruta_sample.rds")
-
-if (!file.exists(save_path) | FORCE_MODEL_RUN) {
-  cat("Running Boruta\n")
-  
+bb <- cache_operation(here("data/ts_boruta_sample.rds"), {
   set.seed(RANDOM_SEED)
-  bb <- abt_sub_std %>% 
+  bt_sub_std %>% 
     distinct(county_fip) %>% 
     sample_n(275) %>% 
     semi_join(abt_sub_std, ., by = "county_fip") %>% 
     select(-c(date:county)) %>% 
     Boruta::Boruta(target ~ ., data = ., maxRuns = 20, doTrace = 2)
-  
-  saveRDS(bb, save_path)
-}
-
-bb <- readRDS(save_path)
+})
 ```
 
 Boruta results:
@@ -499,16 +265,7 @@ Boruta results:
 
 ```{r}
 # Make a nicer Boruta importance history plot that lists all column names
-bb$ImpHistory %>% 
-  as_tibble(rownames = "iteration") %>% 
-  pivot_longer(-iteration, names_to = "feature", values_to = "importance") %>% 
-  filter(importance > -Inf) %>% 
-  left_join(enframe(bb$finalDecision, "feature", "decision"), by = "feature") %>% 
-  mutate(feature = fct_rev(fct_reorder(factor(feature), importance, median))) %>% 
-  ggplot(aes(feature, importance, fill = decision)) + 
-  geom_boxplot() + 
-  coord_flip() + 
-  scale_fill_discrete(na.translate = F)
+plot_boruta(bb)
 ``` 
 
 ---
@@ -603,15 +360,18 @@ bind_rows(
 Implement the change:
 
 ```{r}
-abt_sub_std <- abt_sub_std %>% 
-  mutate(cov_pos_tests_frac = cov_pos_tests / cov_total_tests)
+abt_sub <- abt_fe_add_cov_pos_tests_frac(abt_sub)
 
-abt_sub <- abt_sub %>% 
-  mutate(cov_pos_tests_frac = if_else(
-    cov_total_tests == 0, 
-    0, 
-    cov_pos_tests / cov_total_tests)
-  )
+# Cannot apply to standardized features directly
+std_pars_p <- std_table[std_table$feature == "cov_pos_tests", ]
+std_pars_t <- std_table[std_table$feature == "cov_total_tests", ]
+abt_sub_std <- abt_sub_std %>% 
+  mutate(
+    cov_pos_tests = cov_pos_tests * std_pars_p$sd + std_pars_p$mean,
+    cov_total_tests = cov_total_tests * std_pars_t$sd + std_pars_t$mean
+  ) %>% 
+  abt_fe_add_cov_pos_tests_frac() %>% 
+  mutate(across(c(cov_pos_tests, cov_total_tests), ~ (. - mean(.)) / sd(.)))
 ```
 
 #### Age binning
@@ -681,17 +441,8 @@ bind_rows(
 Implement the change:
 
 ```{r}
-abt_sub_std <- abt_sub_std %>% 
-  mutate(
-    acs_age_25_54 = acs_age_25_34 + acs_age_35_44 + acs_age_45_54,
-    acs_age_55_84 = acs_age_55_64 + acs_age_65_74 + acs_age_75_84
-  )
-
-abt_sub <- abt_sub %>% 
-  mutate(
-    acs_age_25_54 = acs_age_25_34 + acs_age_35_44 + acs_age_45_54,
-    acs_age_55_84 = acs_age_55_64 + acs_age_65_74 + acs_age_75_84
-  )
+abt_sub_std <- abt_fe_add_coarse_age_bins(abt_sub_std)
+abt_sub <- abt_fe_add_coarse_age_bins(abt_sub)
 ```
 
 #### Mobility subsets
@@ -797,7 +548,9 @@ abt_sub_std %>%
 Factors:
 
 ```{r}
-sample_abt %>% 
+set.seed(RANDOM_SEED)
+abt_sub_std %>% 
+  sample_n(10000) %>% 
   select(-c(date:county)) %>% 
   select(target, where(is.factor)) %>% 
   pivot_longer(-target) %>% 
@@ -812,31 +565,6 @@ We'll tackle interactions during modeling.
 ---
 
 # Data samples for development
-
-## Sample 1: 10 counties by 10 states
-
-To keep development snappy, take 10 counties per state for 10 states. (Yes, this
-is biased, but it allows for several kinds of useful tests.)
-
-```{r}
-set.seed(RANDOM_SEED)
-
-sample_ids <- abt_sub_std %>% 
-  group_by(state, state_code) %>% 
-  summarize(n_counties = n_distinct(county_fip), .groups = "drop") %>% 
-  filter(n_counties > 20) %>% 
-  sample_n(10) %>% 
-  left_join(abt_sub_std, by = c("state", "state_code")) %>% 
-  distinct(state, state_code, county, county_fip) %>% 
-  group_by(state_code) %>% 
-  sample_n(10) %>% 
-  ungroup()
-
-sample_abt <- abt_sub_std %>% 
-  semi_join(sample_ids, by = c("state", "state_code", "county", "county_fip"))
-
-dim(sample_abt)
-```
 
 ## Sample 2: 40 counties by 25 states
 
@@ -919,348 +647,6 @@ sample2_abt %>%
   ggplot(aes(value)) + 
   geom_histogram(bins = 50) + 
   facet_wrap(~ name, scales = "free")
-```
-
----
-
-# Model building: Sample 1
-
-We initially applied a zero-inflated negative-binomial model, but after 
-removing the initial zeros it seems not to be needed.
-
-Here we use out small CV sample to add features and test CV performance.
-
----
-
-## Initial random intercepts baseline model
-
-```{r}
-save_path <- here("data/ts_model_baseline.rds")
-
-if (!file.exists(save_path) | FORCE_MODEL_RUN) {
-  cat("Running model\n")
-  
-  baseline <- run_model_vfold(
-    formula = target ~ 1 + (1 | state_code/county_fip),
-    data = sample_abt, 
-    ziformula = ~ 1 + (1 | state_code/county_fip)
-  )
-  saveRDS(baseline, save_path)
-}
-
-baseline <- readRDS(save_path)
-```
-
-```{r}
-baseline %>% extract_cv_glance()
-baseline %>% extract_cv_perf()
-```
-
-### Without zero inflation
-
-```{r}
-save_path <- here("data/ts_model_baseline_nozi.rds")
-
-if (!file.exists(save_path) | FORCE_MODEL_RUN) {
-  cat("Running model\n")
-  
-  baseline_nozi <- run_model_vfold(
-    formula = target ~ 1 + (1 | state_code/county_fip),
-    data = sample_abt
-  )
-  saveRDS(baseline_nozi, save_path)
-}
-
-baseline_nozi <- readRDS(save_path)
-```
-
-Little difference in performance.
-
-```{r}
-baseline_nozi %>% extract_cv_glance()
-baseline_nozi %>% extract_cv_perf()
-```
-
-### With time
-
-```{r}
-save_path <- here("data/ts_model_baseline_time.rds")
-
-if (!file.exists(save_path) | FORCE_MODEL_RUN) {
-  cat("Running model\n")
-  
-  baseline_time <- run_model_vfold(
-    formula = target ~ 1 + time_days_since_inf1 + (1 | state_code/county_fip),
-    data = sample_abt
-  )
-  saveRDS(baseline_time, save_path)
-}
-
-baseline_time <- readRDS(save_path)
-```
-
-```{r}
-baseline_time %>% extract_cv_glance()
-baseline_time %>% extract_cv_perf()
-```
-
----
-
-## Larger models
-
-Build a sequence of larger models, measuring fit and OOS performance.
-This will give a rough idea of allowable model complexity, which we can
-then fine tune.
-NB: Each model is saved for later reuse.
-
-```{r}
-larger_model_formulae <- list(
-  "larger_dem_pop_test" = target ~ 1 + 
-    time_days_since_inf1 + 
-    # Demographics
-    acs_pop_total + acs_median_hh_inc_10k + acs_race_minority + 
-    acs_age_25_34 + acs_age_35_44 + acs_age_45_54 + acs_age_55_64 + 
-    acs_age_65_74 + acs_age_75_84 + acs_age_85_ge + 
-    # Policy
-    policy_recoded + 
-    # Testing
-    cov_pos_tests + cov_total_tests + 
-    (1 | state_code/county_fip),
-  
-  "larger_dem_pop_test_polrs" = target ~ 1 + 
-    time_days_since_inf1 + 
-    # Demographics
-    acs_pop_total + acs_median_hh_inc_10k + acs_race_minority + 
-    acs_age_25_34 + acs_age_35_44 + acs_age_45_54 + acs_age_55_64 + 
-    acs_age_65_74 + acs_age_75_84 + acs_age_85_ge + 
-    # Policy
-    policy_recoded + 
-    # Testing
-    cov_pos_tests + cov_total_tests + 
-    (1 + policy_recoded | state_code) + 
-    (1 | state_code:county_fip),
-  
-  "larger_dem_pop_test_mob" = target ~ 1 + 
-    time_days_since_inf1 + 
-    # Demographics
-    acs_pop_total + acs_median_hh_inc_10k + acs_race_minority + 
-    acs_age_25_34 + acs_age_35_44 + acs_age_45_54 + acs_age_55_64 + 
-    acs_age_65_74 + acs_age_75_84 + acs_age_85_ge + 
-    # Policy
-    policy_recoded + 
-    # Testing
-    cov_pos_tests + cov_total_tests + 
-    # Policy effectiveness
-    mobility_retail_and_recreation + 
-    mobility_grocery_and_pharmacy + 
-    mobility_parks + 
-    mobility_transit_stations + 
-    mobility_workplaces + 
-    mobility_residential +
-    (1 | state_code/county_fip),
-  
-  "larger_dem_pop_test_mob_ip" = target ~ 1 + 
-    time_days_since_inf1 + 
-    # Demographics
-    acs_pop_total + acs_median_hh_inc_10k + acs_race_minority + 
-    acs_age_25_34 + acs_age_35_44 + acs_age_45_54 + acs_age_55_64 + 
-    acs_age_65_74 + acs_age_75_84 + acs_age_85_ge + 
-    # Policy
-    policy_recoded + 
-    # Testing
-    cov_pos_tests + cov_total_tests + 
-    # Policy effectiveness
-    mobility_retail_and_recreation + 
-    mobility_grocery_and_pharmacy + 
-    mobility_parks + 
-    mobility_transit_stations + 
-    mobility_workplaces + 
-    mobility_residential +
-    # Interactions
-    time_days_since_inf1:policy_recoded + 
-    (1 | state_code/county_fip),
-  
-  "larger_dem_pop_test_mob_ip_id" = target ~ 1 + 
-    time_days_since_inf1 + 
-    # Demographics
-    acs_pop_total + acs_median_hh_inc_10k + acs_race_minority + 
-    acs_age_25_34 + acs_age_35_44 + acs_age_45_54 + acs_age_55_64 + 
-    acs_age_65_74 + acs_age_75_84 + acs_age_85_ge + 
-    # Policy
-    policy_recoded + 
-    # Testing
-    cov_pos_tests + cov_total_tests + 
-    # Policy effectiveness
-    mobility_retail_and_recreation + 
-    mobility_grocery_and_pharmacy + 
-    mobility_parks + 
-    mobility_transit_stations + 
-    mobility_workplaces + 
-    mobility_residential +
-    # Interactions
-    time_days_since_inf1:policy_recoded + 
-    policy_recoded:mobility_workplaces + 
-    policy_recoded:mobility_grocery_and_pharmacy + 
-    policy_recoded:mobility_transit_stations + 
-    policy_recoded:mobility_residential + 
-    acs_pop_total:acs_median_hh_inc_10k + 
-    acs_race_minority:acs_median_hh_inc_10k + 
-    acs_pop_total:acs_race_minority + 
-    (1 | state_code/county_fip),
-  
-  "larger_dem_pop_test_mob_ip_id_im" = target ~ 1 + 
-    time_days_since_inf1 + 
-    # Demographics
-    acs_pop_total + acs_median_hh_inc_10k + acs_race_minority + 
-    acs_age_25_34 + acs_age_35_44 + acs_age_45_54 + acs_age_55_64 + 
-    acs_age_65_74 + acs_age_75_84 + acs_age_85_ge + 
-    # Policy
-    policy_recoded + 
-    # Testing
-    cov_pos_tests + cov_total_tests + 
-    # Policy effectiveness
-    mobility_retail_and_recreation + 
-    mobility_grocery_and_pharmacy + 
-    mobility_parks + 
-    mobility_transit_stations + 
-    mobility_workplaces + 
-    mobility_residential +
-    # Interactions
-    time_days_since_inf1:policy_recoded + 
-    acs_pop_total:acs_median_hh_inc_10k + 
-    acs_race_minority:acs_median_hh_inc_10k + 
-    acs_pop_total:acs_race_minority + 
-    policy_recoded:mobility_workplaces + 
-    policy_recoded:mobility_grocery_and_pharmacy + 
-    policy_recoded:mobility_transit_stations + 
-    policy_recoded:mobility_residential + 
-    (1 | state_code/county_fip),
-  
-  "larger_dem_pop_test_mob_ip_id_ia" = target ~ 1 + 
-    time_days_since_inf1 + 
-    # Demographics
-    acs_pop_total + acs_median_hh_inc_10k + acs_race_minority + 
-    acs_age_25_34 + acs_age_35_44 + acs_age_45_54 + acs_age_55_64 + 
-    acs_age_65_74 + acs_age_75_84 + acs_age_85_ge + 
-    # Policy
-    policy_recoded + 
-    # Testing
-    cov_pos_tests + cov_total_tests + 
-    # Policy effectiveness
-    mobility_retail_and_recreation + 
-    mobility_grocery_and_pharmacy + 
-    mobility_parks + 
-    mobility_transit_stations + 
-    mobility_workplaces + 
-    mobility_residential +
-    # Interactions
-    time_days_since_inf1:policy_recoded + 
-    acs_pop_total:acs_median_hh_inc_10k + 
-    acs_race_minority:acs_median_hh_inc_10k + 
-    acs_pop_total:acs_race_minority + 
-    policy_recoded:(acs_age_65_74 + acs_age_75_84 + acs_age_85_ge) + 
-    acs_median_hh_inc_10k:(acs_age_65_74 + acs_age_75_84 + acs_age_85_ge) + 
-    acs_race_minority: (acs_age_65_74 + acs_age_75_84 + acs_age_85_ge) +
-    (1 | state_code/county_fip)
-)
-```
-
-```{r}
-# These run serially, but the CV is parallelized
-iwalk(larger_model_formulae, ~ {
-  save_path <- here(glue("data/ts_model_{.y}.rds"))
-
-  if (!file.exists(save_path) | FORCE_MODEL_RUN) {
-    cat(glue("Running model {.y}"), "\n\n")
-    
-    model <- run_model_vfold(
-      formula = .x,
-      data = sample_abt
-    )
-    saveRDS(model, save_path)
-  }
-})
-```
-
-```{r}
-larger_models <- larger_model_formulae %>% 
-  imap(~ readRDS(here(glue("data/ts_model_{.y}.rds"))))
-```
-
-### Model performance measures
-
-### AIC, BIC, etc
-
-Hard to say anything based on BIC. These models are difficult.
-
-```{r}
-larger_models %>% 
-  imap_dfr(~ {
-    .x %>% 
-      select(glance) %>% 
-      unnest(glance)
-  }, .id = "model") %>% 
-  select(-sigma) %>% 
-  group_by(model) %>% 
-  summarize(across(.fns = list(mean = mean, sd = sd)), .groups = "drop")
-```
-
-### Train vs test performance
-
-Again, hard to say these (very large) models are overfit. 
-Very larger error bars.
-
-```{r}
-larger_models %>% 
-  map_dfr(extract_cv_perf, .id = "model") %>% 
-  pivot_longer(
-    mean_train:sd_test, 
-    names_to = c("measure", "partition"), 
-    names_sep = "_"
-  ) %>% 
-  pivot_wider(names_from = "measure") %>% 
-  ggplot(aes(model, mean, color = partition)) + 
-  geom_point(alpha = 0.5) + 
-  geom_errorbar(
-    aes(ymin = mean - sd, ymax = mean + sd), 
-    size = 0.5, width = 0, alpha = 0.5
-  ) + 
-  facet_wrap(~ metric, scales = "free_x") + 
-  coord_flip()
-```
-
-### Model visualization
-
-```{r, echo=F}
-# Visualize the fixed effects for 1 CV fold
-iwalk(larger_models, ~ print(plot_model(.x$object[[1]], title = .y, type = "est")))
-```
-
-### Model coefficients aggregation
-
-```{r}
-# This is simple error propagation assuming independent obvs as a way to combine fits
-s1_coef_agg <- larger_models %>% 
-  map_dfr(~ {
-    select(.x, tidy) %>% 
-      unnest(tidy) %>% 
-      group_by(effect, component, group, term) %>% 
-      summarize(
-        estimate = mean(estimate), 
-        std.error = sqrt(sum(std.error**2)), 
-        .groups = "drop"
-      )
-  }, .id = "model")
-
-
-s1_coef_agg %>% 
-  ggplot(aes(model, estimate)) + 
-  geom_hline(yintercept = 0) + 
-  geom_point() + 
-  geom_errorbar(
-    aes(ymin = estimate - 2 * std.error, ymax = estimate + 2 * std.error)
-  ) + 
-  facet_wrap(~ term, scales = "free_y")
 ```
 
 ---
@@ -1386,7 +772,7 @@ plot_model(s2_pol_cov$object[[1]], type = "re")
 
 ```{r}
 s2_pol_cov %>% 
-  cv_extract_preds(.per_fold = 2, seed = RANDOM_SEED) %>% 
+  extract_cv_trajectories(.per_fold = 2, seed = RANDOM_SEED) %>% 
   plot_w_policy()
 ```
 
