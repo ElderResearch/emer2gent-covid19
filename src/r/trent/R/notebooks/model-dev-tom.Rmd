@@ -290,7 +290,7 @@ correlations <- abt_sub_std %>%
 correlations %>% 
   as_tibble(rownames = "feature1") %>% 
   pivot_longer(-feature1, names_to = "feature2", values_to = "correlation") %>% 
-  # filter(feature1 == "acs_gender_female") %>% 
+  # filter(feature1 == "pop_density") %>%
   filter(abs(correlation) > 0.6) %>% 
   filter(feature1 < feature2) %>% 
   arrange(-abs(correlation)) %>% 
@@ -633,8 +633,9 @@ sample2_abt <- sample2_abt %>%
     .keep = "unused",
     .after = "time_dow"
   ) %>% 
+  mutate(time_log = log1p(time_days_since_inf1)) %>% 
   # standardize
-  mutate(across(time_dow_x:acs_age_55_84, ~ (. - mean(.)) / (2 * sd(.))))
+  mutate(across(time_dow_x:time_log, ~ (. - mean(.)) / (2 * sd(.))))
 
 dim(sample2_abt)
 summary(sample2_abt)
@@ -1187,6 +1188,69 @@ extract_cv_tidy(s2_pol_cov, s2_pol_cov_nopop) %>%
 ```{r}
 plot_models(s2_pol_cov_nopop$object, dot.size = 2)
 ```
+
+---
+
+## 8. Log Time
+
+
+```{r}
+s2_pol_log_time <-  cache_operation(
+  here("data/ts_model_s2_pol_log_time.rds"), {
+    run_model_vfold(
+     formula = target ~ 1 + 
+       policy_recoded + 
+       time_log + 
+       #time_days_since_inf1 + 
+       acs_pop_total + pop_density + 
+       acs_race_minority + 
+       acs_gender_female + 
+       acs_median_hh_inc_10k + 
+       acs_age_le_24 + acs_age_25_54 + acs_age_55_84 + acs_age_85_ge + 
+       cov_total_tests + cov_pos_tests_frac + 
+       # This is the new interaction
+       policy_recoded:time_log + 
+       (1 | state_code/county_fip),
+     data = sample2_abt
+    )
+  })
+```
+
+### Stats tables
+
+No clear harm to the model fit, but no real imprevent either.
+
+```{r}
+extract_cv_glance(s2_pol_cov1_it, s2_pol_log_time)
+extract_cv_perf(s2_pol_cov1_it, s2_pol_log_time)
+
+s2_pol_log_time %>% 
+  extract_cv_tidy() %>% 
+  print(n = Inf)
+```
+
+### Fit charts
+
+```{r}
+plot_models(s2_pol_log_time$object, dot.size = 2)
+```
+
+```{r}
+# CV fold 1 only
+plot_model(s2_pol_cov1_it$object[[1]], type = "diag")
+plot_model(s2_pol_cov1_it$object[[1]], type = "resid")
+plot_model(s2_pol_cov1_it$object[[1]], type = "re")
+```
+
+### Trajectory plots
+
+```{r}
+s2_pol_cov1_it %>% 
+  extract_cv_trajectories(.per_fold = 2, seed = RANDOM_SEED) %>% 
+  plot_w_policy()
+```
+
+
 
 ---
 

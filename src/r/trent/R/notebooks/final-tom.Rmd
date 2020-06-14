@@ -1,0 +1,362 @@
+---
+title:  "Model Exploration Report DRAFT"
+author: "Elder Research, Inc."
+date:   "Updated 2020-06-13"
+output: 
+  html_document
+#  pdf_document: 
+#    number_sections: yes
+#    keep_tex: yes
+---
+
+```{r setup, include=FALSE}
+
+# General setup ----------------------------------------------------------------
+
+r_root <- rprojroot::find_rstudio_root_file()
+
+knitr::opts_knit$set(root.dir = file.path(r_root))
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(fig.width = 5, fig.height = 4, fig.align = "center")
+
+ggplot2::theme_set(ggplot2::theme_minimal())
+
+
+# R session config -------------------------------------------------------------
+
+options(stringsAsFactors = F)
+
+suppressPackageStartupMessages({
+  library(future)
+  library(here)
+  library(tidyverse)
+  library(assertthat)
+  library(rsample)
+  library(yardstick)
+  library(glue)
+  library(glmmTMB)
+  library(furrr)
+  # library(sjPlot)
+  # library(broom.mixed)
+})
+
+# plan(multiprocess)
+
+
+# Global parameters ------------------------------------------------------------
+
+RANDOM_SEED <- -461698
+FORCE_MODEL_RUN <- FALSE
+
+
+# Helper functions -------------------------------------------------------------
+
+source(here("R/helpers.R"))
+```
+
+
+<!--- --->
+
+# Summary of Findings
+
+<!--- --->
+
+# Data Sources and Preparation
+
+We're using the ABT created with Python upstream.
+
+## Further Adjustments
+
+```{r abt_adjust, include=F}
+# Load the ABT
+abt <- vroom::vroom(here("data/abt_prepped.csv"))
+
+# Add new features and change existing ones
+abt <- abt_fe_time_days_since_inf1(abt)
+abt <- abt_fe_acs_median_hh_inc_10k(abt)
+abt <- abt_fe_add_cov_pos_tests_frac(abt)
+abt <- abt_fe_add_coarse_age_bins(abt)
+
+# Choose columns to keep
+keep_columns <- c(
+  # ID, time, target
+  "state_code", "county_fip", "state", "county", 
+  "date", 
+  "target", 
+  # Treatment
+  "policy_recoded" = "policy",
+  # Covariates
+  "time_days_since_inf1",
+  "tmpf_mean", "relh_mean", 
+  # pop density is correlated to total pop @ 0.83, 
+  # so keep density in the model as I think it's more 'physical'
+  "pop_density",
+  # "acs_pop_total",
+  # Keep the more at risk folks, correlated with <= 24
+  # "acs_age_le_24",
+  "acs_age_25_54", "acs_age_55_84", "acs_age_85_ge", 
+  "acs_race_minority", 
+  "acs_gender_female",
+  "acs_median_hh_inc_10k", 
+  "cov_total_tests", "cov_pos_tests_frac"
+)
+
+# Subset columns and rows
+# We keep rows after 1st infection, and 
+# policy is a factor relative to none_issued
+abt <- abt %>% 
+  select(all_of(keep_columns)) %>% 
+  filter(time_days_since_inf1 >= 0) %>% 
+  mutate(policy_recoded = factor(policy_recoded, levels = c(
+    "none_issued", "phase_1", "phase_2", "phase_3", "stay_home")
+  ))
+
+# ABT checks go here
+assert_that(all(!is.na(abt)))
+```
+
+## Standardization
+
+Re-standardize, etc.
+http://www.stat.columbia.edu/~gelman/research/published/standardizing7.pdf
+
+```{r std_before, echo=F}
+abt %>%
+  select(where(is.numeric), -county_fip, -target) %>% 
+  pivot_longer(everything()) %>% 
+  ggplot(aes(value)) + 
+  geom_histogram(bins = 30) + 
+  facet_wrap(~ name, scales = "free")
+```
+
+```{r standardize, include=F}
+# Transform
+abt <- abt %>% 
+  mutate(
+    across(c(pop_density, starts_with("acs")), log),
+    across(starts_with("cov"), log1p)
+  )
+
+# Standardize
+standardize_lookup <- abt %>% 
+  select(where(is.numeric), -county_fip, -target) %>% 
+  pivot_longer(everything(), "feature") %>% 
+  group_by(feature) %>% 
+  summarize(mean = mean(value), sd = sd(value), .groups = "drop")
+
+abt <- mutate(abt, across(all_of(standardize_lookup$feature), standardize))
+```
+
+```{r std_after, echo=F}
+abt %>%
+  select(where(is.numeric), -county_fip, -target) %>% 
+  pivot_longer(everything()) %>% 
+  ggplot(aes(value)) + 
+  geom_histogram(bins = 30) + 
+  facet_wrap(~ name, scales = "free")
+```
+
+
+## All-Relevant Feature Exploration
+
+
+```{r boruta_run, include=F}
+bb <- cache_operation(here("data/final/boruta_20k.rds"), {
+  set.seed(RANDOM_SEED)
+  
+  sample_counties <- abt %>% 
+    distinct(county_fip) %>% 
+    sample_n(275)
+  
+  bb <- semi_join(abt, sample_counties, by = "county_fip") %>% 
+    select(-c(date:county)) %>% 
+    Boruta::Boruta(target ~ ., data = ., maxRuns = 20, doTrace = 2)
+  
+  list(bb = bb, sample_counties = sample_counties)
+})
+
+# Observations for report
+bb_obs <- abt %>% 
+  semi_join(bb$sample_counties, by = "county_fip") %>% 
+  nrow()
+```
+
+Run Boruta against a random sample 275 counties (`r scales::comma(bb_obs)`).
+We sample entire per-county trajectories rather than arbitrary random rows.
+Boruta runs permutation tests against the input features using Random 
+Forests to identify all _relevant_ features.
+
+Boruta results.
+
+```{r boruta_plot, echo = F}
+plot_boruta(bb$bb)
+``` 
+
+## Correlations
+
+Features with $|r|>0.5$.
+
+```{r correlations, include = F}
+correlations <- abt %>% 
+  select(-c(date:county)) %>% 
+  select(where(is.numeric)) %>% 
+  cor()
+
+# See above for the highly-correlated vars we removed
+correlations %>% 
+  as_tibble(rownames = "feature1") %>% 
+  pivot_longer(-feature1, names_to = "feature2", values_to = "correlation") %>% 
+  filter(abs(correlation) > 0.5) %>% 
+  filter(feature1 < feature2) %>% 
+  arrange(-abs(correlation)) %>% 
+  knitr::kable()
+```
+
+Discuss correlation results.
+
+```{r corrplot, echo = F}
+corrplot::corrplot(
+  correlations, 
+  method = "color", 
+  order = "hclust", 
+  tl.col = "black", 
+  tl.cex = 0.8
+)
+```
+
+<!--- --->
+
+# Model Fitting and Validation
+
+## Validation Strategy
+
+7-fold group cross validation grouped across counties.
+Evaluate on held out data _and_ assess model fit through AIC.
+
+## Models and Fits
+
+### Model 1
+
+```{r model1_no_random_slope, include=F}
+model_1 <- cache_operation(here("data/final/model_1.rds"), {
+  run_model_vfold(
+    formula = target ~ 1 + 
+      policy_recoded + 
+      time_days_since_inf1 + 
+      policy_recoded:time_days_since_inf1 + 
+      pop_density + 
+      acs_race_minority + 
+      acs_gender_female + 
+      acs_median_hh_inc_10k + 
+      acs_age_25_54 + acs_age_55_84 + acs_age_85_ge + 
+      cov_total_tests + cov_pos_tests_frac + 
+      (1 | state_code/county_fip),
+     data = abt, 
+    seed = RANDOM_SEED, 
+    folds = 7L
+  )
+})
+```
+
+```{r}
+model_1 %>% 
+  extract_cv_glance()
+
+model_1 %>% 
+  extract_cv_perf()
+
+model_1 %>% 
+  extract_cv_tidy() %>% 
+  print(n = Inf)
+
+model_1 %>% 
+  extract_cv_trajectories(.per_fold = 2) %>% 
+  plot_w_policy()
+
+model_1 %>% 
+  select(id, tidy) %>% 
+  unnest(tidy) %>% 
+  ggplot(aes(term, estimate, color = id)) + 
+  geom_point(position = position_dodge(width = 0.5)) + 
+  geom_errorbar(
+    aes(ymin = estimate - 2 * std.error, ymax = estimate + 2 * std.error), 
+    position = position_dodge(width = 0.5)
+  ) + 
+  ylim(-3, 3) + 
+  coord_flip() 
+
+sjPlot::plot_models(model_1$object, dot.size = 2)
+# This takes a _very_ long time
+sjPlot::plot_model(model_1$object[[1]], type = "resid")
+```
+
+### Model 2
+
+```{r model2_random_slopes, include=F}
+model_2 <- cache_operation(here("data/final/model_2.rds"), {
+  run_model_vfold(
+    formula = target ~ 1 + 
+      policy_recoded + 
+      time_days_since_inf1 + 
+      policy_recoded:time_days_since_inf1 + 
+      pop_density + 
+      acs_race_minority + 
+      acs_gender_female + 
+      acs_median_hh_inc_10k + 
+      acs_age_25_54 + acs_age_55_84 + acs_age_85_ge + 
+      cov_total_tests + cov_pos_tests_frac + 
+      (1 + time_days_since_inf1 | state_code/county_fip),
+     data = abt, 
+    seed = RANDOM_SEED, 
+    folds = 7L
+  )
+})
+```
+
+```{r}
+extract_cv_glance(model_1, model_2)
+
+extract_cv_perf(model_1, model_2)
+
+model_2 %>% 
+  extract_cv_tidy() %>% 
+  print(n = Inf)
+
+model_2 %>% 
+  extract_cv_trajectories(.per_fold = 2) %>% 
+  plot_w_policy()
+
+model_2 %>% 
+  select(id, tidy) %>% 
+  unnest(tidy) %>% 
+  ggplot(aes(term, estimate, color = id)) + 
+  geom_point(position = position_dodge(width = 0.5)) + 
+  geom_errorbar(
+    aes(ymin = estimate - 2 * std.error, ymax = estimate + 2 * std.error), 
+    position = position_dodge(width = 0.5)
+  ) + 
+  ylim(-3, 3) + 
+  coord_flip()
+
+# These take between a long time and an eternity
+sjPlot::plot_models(model_2$object, dot.size = 2)
+sjPlot::plot_model(model_1$object[[1]], type = "resid")
+```
+
+
+### Model 3?
+
+```{r}
+
+```
+
+
+### Model 4?
+
+## Strengths and Weaknesses
+
+<!--- --->
+
+# Results and Discussion
+
+
