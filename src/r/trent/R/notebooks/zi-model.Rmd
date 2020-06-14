@@ -1,0 +1,682 @@
+---
+title: "Zero Inflated Infection Model"
+author: "Carlos Blancarte"
+date: "Created: 2020-06-11, Updated: `r Sys.Date()`"
+output: html_notebook
+---
+
+```{r setup, echo=FALSE}
+r_root <- rprojroot::find_rstudio_root_file()
+knitr::opts_knit$set(root.dir = file.path(r_root))
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, dpi=100)
+knitr::opts_chunk$set(fig.width=7, fig.height=5)
+ggplot2::theme_set(ggplot2::theme_minimal())
+```
+
+```{r, lib-load}
+suppressPackageStartupMessages({
+  library(broom)
+  library(broom.mixed)
+  library(dplyr)
+  library(feather)
+  library(forcats)
+  library(fs)
+  library(ggplot2)
+  library(glue)
+  library(lubridate)
+  library(purrr)
+  library(readr)
+  library(rsample)
+  library(splines)
+  library(stringr)
+  library(tibble)
+  library(tidyr)
+  library(glmmTMB)
+  library(sjPlot)
+  library(yardstick)
+})
+```
+
+
+```{r}
+policy_labels <- c('none_issued', 'stay_home', 'phase_1', 'phase_2', 'phase_3') 
+dd <- feather::read_feather('data/abt_prepped.feather')
+dd <- mutate(dd, policy = as.factor(policy)) %>% 
+  mutate(policy = fct_relevel(policy, policy_labels)) %>% 
+  mutate(policy_any = fct_collapse(policy, 
+    none_issued = c('none_issued'), 
+    stay_home = c('stay_home'), 
+    any_reopen = c('phase_1', 'phase_2', 'phase_3')
+  )) %>% 
+  mutate(policy_any = fct_relevel(policy_any, c('none_issued', 'stay_home', 'any_reopen')))
+
+# Convenience Function:
+policy_check <- dd %>%
+  group_by(state, county, county_fip, policy) %>% 
+  summarise(start = min(date), stop = max(date), .groups = 'drop') %>%
+  group_by(state, county, county_fip) %>%
+  mutate(order = row_number(), diff_days = start - lag(stop)) %>%
+  ungroup()
+
+plot_w_policy <- function(df, y=NULL) {
+  # NB: this calls out to global 'policy_check'
+  stopifnot(inherits(df, 'data.frame')); stopifnot(nrow(df) > 0)
+  target <- rlang::sym(y)
+  
+  ggplot(data = df, aes(x = date, y = !!target)) +
+    geom_line() + 
+    facet_wrap(~ state + county, scales = 'free_y') +
+    scale_fill_viridis_d() +
+    ylab(y) +
+    geom_rect(
+      data = filter(policy_check, county_fip %in% unique(df$county_fip)),
+      aes(xmin = start, xmax = stop, ymin = -Inf, ymax = Inf, fill = policy), 
+      alpha = 0.25, inherit.aes = FALSE
+    )
+}
+```
+
+# Model
+
+
+### Multi-Level Zero Inflated Negative Binomial Regression
+
+from: [here](https://stats.idre.ucla.edu/r/dae/zinb/)
+
+A zero-inflated model assumes that a zero outcome is due to two different
+processes. The number of covid confirmed cases can appear as `0` in
+our data set due to one of two processes:  
+  1. Cases are not reported (e.g., lack of testing capacity)  
+  2. No cases exist (e.g., virus has not arrived in a county)  
+
+The two parts of the a zero-inflated model are a binary model, usually a logit
+model to model which of the two processes the zero outcome is associated with,
+and a count model, in this case, a negative binomial model, to model the count
+process. The expected count is expressed as a combination of the two processes.
+
+Begin with a subset of states for exploration (e.g., don't peek!)
+Time will measure the number of days since the state's **first** infection
+
+```{r}
+state_populations <- distinct(dd, state, county, acs_pop_total) %>%
+  group_by(state) %>% 
+  summarise(state_pop = sum(acs_pop_total), .groups='drop')
+
+set.seed(1337)
+sample_states <- c(sample(unique(dd$state_fip), 7), 4, 46, 36)
+
+df <- filter(dd, state_fip %in% sample_states) %>% 
+  ungroup() %>%
+  group_by(state) %>%
+  mutate(first_case_date = min(date[confirmed > 0])) %>%
+  filter(date >= first_case_date) %>%
+  #mutate(across(scaled_county_daily_claims, ~ replace_na(.x, median(.x, na.rm=T)))) %>%
+  #mutate(across(where(is.numeric), ~ replace_na(.x, median(.x, na.rm=T)))) %>%
+  ungroup() %>% 
+  group_by(state, county) %>% 
+  mutate(time = row_number()) %>%
+  mutate(state_county = sprintf('%s: %s', state, county)) %>%
+  mutate(time_dow = factor(wday(date, label=T), ordered=FALSE)) %>%
+  ungroup() %>%
+  inner_join(state_populations, by = 'state') %>% 
+  mutate(test_pop_tested = cov_total_tests/state_pop)
+
+# Create a 'time-in-phase' feature
+df <- df %>% 
+  mutate(policy_none_issued = ifelse(policy=='none_issued', 1, 0)) %>% 
+  mutate(policy_stay_home = ifelse(policy=='stay_home', 1, 0)) %>% 
+  mutate(policy_phase_1 = ifelse(policy=='phase_1', 1, 0)) %>% 
+  mutate(policy_phase_2 = ifelse(policy=='phase_2', 1, 0)) %>% 
+  mutate(policy_phase_3 = ifelse(policy=='phase_3', 1, 0)) %>% 
+  mutate(policy_any_phase = policy_phase_1 + policy_phase_2 + policy_phase_3) %>%
+  group_by(state, county) %>% 
+  mutate(time_in_none_issued = cumsum(policy_none_issued) * policy_none_issued) %>%
+  mutate(time_in_stay_home = cumsum(policy_stay_home) * policy_stay_home) %>%
+  mutate(time_in_policy_1 = cumsum(policy_phase_1) * policy_phase_1) %>%
+  mutate(time_in_policy_2 = cumsum(policy_phase_2) * policy_phase_2) %>%
+  mutate(time_in_policy_3 = cumsum(policy_phase_3) * policy_phase_3) %>%
+  mutate(time_in_any_phase = cumsum(policy_any_phase) * policy_any_phase) %>%
+  ungroup()
+
+select(df, state, date, time, first_case_date) %>% distinct() %>% arrange(time)
+
+id_cols <- c('state', 'county', 'county_fip')
+policy_cols <- c('policy', 'policy_any')
+mobility_cols <- select(df, retail_and_recreation:residential) %>% names()
+demo_cols <- select(df, acs_age_le_24:acs_median_hh_inc_total) %>% names()
+weather_cols <- c('tmpf_mean', 'dwpf_mean', 'relh_mean')
+test_cols <- c('cov_pos_tests', 'cov_total_tests')
+time_cols <- c('time', 'time_dow')
+econ_cols <- c('unemployment_rate', 'labor_force', 'unemployed')
+xcols <- c(policy_cols, mobility_cols, demo_cols, weather_cols,
+           test_cols, time_cols, econ_cols)
+
+qplot(df$target)
+
+# Get upper triangle of the correlation matrix
+get_upper_tri <- function(cormat) {
+  cormat[lower.tri(cormat)]<- NA
+  return(cormat)
+}
+
+corr <- select(df, all_of(xcols), all_of(time_cols), target) %>% 
+  select_if(is.numeric) %>% 
+  cor(use='pairwise.complete.obs')
+
+corr %>%
+  reshape2::melt(na.rm=TRUE) %>%
+  ggplot(data=., aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  theme_minimal()+ 
+  theme(axis.text.x = element_text(angle=45, vjust=1, size=10, hjust=1)) +
+  coord_fixed() + 
+  scale_fill_gradient2(
+    low="blue", high="red", mid="white", midpoint=0, limit=c(-1,1),
+    space="Lab", name="Pearson\nCorrelation"
+  )
+  
+```
+
+We see that each block of predictors (e.g., mobility, demos, tests) are
+strongly correlated
+
+### Mobility
+
+```{r, warning=FALSE}
+pop_level <- dd %>% 
+  group_by(date) %>% 
+  summarise(across(all_of(mobility_cols), mean), .groups='drop') %>%
+  gather(k, v, -date)
+
+mob_plots <- df %>% 
+  gather(k, v, all_of(mobility_cols)) %>%
+  group_split(state) %>% 
+  map(function(df) {
+    state <- unique(df$state)
+    nc <- length(unique(df$county_fip))
+    ggplot(data=df, aes(x=date, y=v, group=county_fip)) + 
+    geom_line(alpha=0.25) +
+    geom_smooth(data=pop_level, aes(x=date, y=v), method='lm', inherit.aes=F) +
+    facet_wrap( ~ k) + 
+    ggtitle(glue('Mobility Series for {nc} counties in {state}'), 
+            'With population linear trend for reference')
+  })
+```
+
+### Who is Getting Tested?
+```{r}
+pop_nums <- dd %>% 
+  distinct(state,  acs_pop_total) %>% 
+  group_by(state) %>%
+  summarise(state_total = sum(acs_pop_total),  .groups='drop') %>% 
+  mutate(total = sum(state_total))
+
+test_rates <- dd %>%
+  distinct(date, state, cov_total_tests) %>% 
+  inner_join(pop_nums, by = 'state') %>% 
+  group_by(date) %>% 
+  mutate(total_tests = sum(cov_total_tests)) %>%
+  ungroup() %>% 
+  group_by(state) %>%
+  mutate(
+    national_pct_pop_tested = total_tests/total,
+    national_test_rate = (total_tests + 1)/(lag(total_tests, 7) + 1),
+    state_pct_pop_tested = cov_total_tests/state_total, 
+    state_test_rate = (cov_total_tests + 1)/(lag(cov_total_tests, 7) + 1) - 1
+  )
+ 
+ggplot(data=test_rates, aes(x=date, y=state_test_rate, group=state)) + 
+  geom_line(alpha=0.25) +
+  geom_line(data=distinct(test_rates, date, national_test_rate),
+          aes(x=date, y=national_test_rate), size=1, inherit.aes=F) +
+  scale_y_continuous(labels=scales::percent) + ylab('% of Population Tested') +
+  ggtitle('Individual State Testing of Population',
+          'With population linear trend for reference')
+
+```
+
+### Effect of Time
+
+```{r}
+df %>%
+ ggplot(data=., aes(x=time, y=target)) + 
+  geom_line(aes(color=policy_any, group=county_fip), alpha=0.5) + 
+  facet_wrap(~ state, scales='free_y') + 
+  scale_color_viridis_d(end=0.75)
+```
+
+## Null Model
+
+The basic glmmTMB fit — a zero-inflated Poisson model with a single
+zeroinflation parameter applying to all observations (ziformula~1). (Excluding
+zero-inflation is glmmTMB’s default: to exclude it explicitly, use ziformula~0.)
+
+The zero-inflaction parameter will be estimated by _county_ as it is the
+level at which the number of infections is reported at.  
+
+```{r}
+write_model_rds <- function(obj, save_path='models/') {
+  stopifnot(is.object(obj))
+  model_name <- deparse(substitute(obj))
+  if (!dir_exists(save_path)) {
+    warning(sprintf('%s is not a valid directory. Creating `models/` dir'))
+    dir_create('models/')
+    save_path <- 'models/'
+  }
+  path_ <- path(save_path, model_name, ext='rds')  
+  path_ <- path_abs(path_)
+  message(glue('writing model {model_name} to {path_}'))
+  readr::write_rds(obj, path=path_)
+}
+```
+
+## Determine Feasible `zi` Formulations
+```{r}
+z1 <- glmmTMB(
+  target ~ 1 + (1|state) + (1|state_county), 
+  data=df,
+  ziformula=~0,
+  family=nbinom1
+)
+write_model_rds(z1)
+
+z2 <- glmmTMB(
+  target ~ 1 + (1|state) + (1|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(z2)
+
+z3 <- glmmTMB(
+  target ~ 1 + (1|state) + (1|state_county), 
+  data=df,
+  ziformula= ~1|state,
+  family=nbinom1
+)
+write_model_rds(z3)
+
+z4 <- glmmTMB(
+  target ~ 1 + (1|state) + (1|state_county), 
+  data=df,
+  ziformula= ~1 + log(pop_density)|state,
+  family=nbinom1
+)
+write_model_rds(z4)
+
+AIC(z1, z2, z3, z4)
+```
+
+## Time
+
+With this small sample of 5 states we see that there is a decent amount of 
+variation between states and counties
+```{r}
+t1 <- glmmTMB(
+  target ~ 1 + time  + (1|state) + (1|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(t1)
+
+t2 <- glmmTMB(
+  target ~ 1 + poly(time, 3) + (1|state) + (1|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(t2)
+
+t3 <- glmmTMB(
+  target ~ 1 + ns(time, degree=3) + (1|state) + (1|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(t3)
+
+t4 <- glmmTMB(
+  target ~ 1 + bs(time, degree=3) + (1|state) + (1|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(t4)
+
+t_models <- list(t1, t2, t3, t4)
+t_preds <- map(t_models ~ tibble(p = exp(predict(.x))))
+t_preds <- map(t_preds, ~ function(df) {
+  bind_cols(select(df, state, county, county_fip, date, target, policy), df)
+})
+
+plot_model_predictions <- function(model_list) {
+  
+  preds <- map(model_list,  ~ tibble(p = exp(predict(.x))))
+  preds <- map(preds, function(p_df) {
+  bind_cols(select(df, state, county, county_fip, date, target, policy), p_df)
+  })
+  preds <- bind_rows(preds, .id='model') %>% 
+  mutate(model = as.numeric(model)) %>%
+  nest(data=-c(state, county)) %>% 
+  mutate(state_county = sprintf('%s, %s',state, county)) %>%
+  mutate(plots = map2(data, state_county, function(df_, sc) {
+    gather(df_, k, v, p, target) %>%
+    ggplot(data = ., aes(x=date, y=v)) + 
+    geom_line(aes(linetype=k)) + 
+    ggtitle(glue('{sc}')) + 
+    facet_wrap(~ model, drop=TRUE) +
+    geom_rect(data=filter(policy_check, county_fip %in% unique(df_$county_fip)),
+            aes(xmin=start, xmax=stop, ymin=-Inf, ymax=Inf, fill=policy),
+            inherit.aes = F, alpha=0.25) +
+  scale_fill_viridis_d()
+  }))
+}
+
+t_preds <- plot_model_predictions(t_models)
+
+```
+
+## Covariate Models
+```{r}
+
+m1 <- glmmTMB(
+  target ~ 1 + bs(time, 3) + policy + (1|state) + (1|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m1)
+
+m2 <- glmmTMB(
+  target ~ 1 + bs(time, 3) + policy_any + (1|state) + (1|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m2)
+
+m3 <- glmmTMB(
+  target ~ 1 + splines::ns(time,3)*policy + (1|state) + (1+time|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m3)
+
+m4 <- glmmTMB(
+  target ~ 1 + splines::bs(time,3)*policy_any + (1|state) + (1+time|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m4)
+
+m5 <- glmmTMB(
+  target ~ 1 + bs(time,3)*policy_any + log(pop_density) +
+    (1|state) + (1+time|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m5)
+
+m6 <- glmmTMB(
+  target ~ 1 + bs(time,3)*policy_any +  acs_race_minority +  log(pop_density) +
+    (1|state) + (1+time|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m6)
+
+m7 <- glmmTMB(
+  target ~ 1 + bs(time,3)*policy_any +  acs_race_minority +  log(pop_density) + log1p(cov_total_tests) +
+    (1|state) + (1+time|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m7)
+
+m8 <- glmmTMB(
+  target ~ 1 + bs(time,3)*policy_any + acs_race_minority + log(pop_density) + log1p(cov_total_tests) + acs_gender_female +
+  (1|state) + (1+time|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m8)
+
+m9 <- glmmTMB(
+  target ~ 1 + bs(time,3)*time_in_stay_home + acs_race_minority + log(pop_density) + log1p(cov_total_tests) + acs_gender_female +
+  (1|state) + (1|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m9)
+
+m10 <- glmmTMB(
+  target ~ 1 + bs(time,3)*time_in_any_phase + acs_race_minority + log(pop_density) + log1p(cov_total_tests) +
+  (1|state) + (1|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m10)
+
+m11 <- glmmTMB(
+  target ~ 1 + bs(time,3)*time_in_any_phase + acs_race_minority + log(pop_density) + log1p(cov_total_tests) + parks +
+  (1+time_in_any_phase|state) + (1|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m11)
+
+m12 <- glmmTMB(
+  target ~ 1 + bs(time,3)*bs(time_in_any_phase, 2) + acs_race_minority + log(pop_density) + log1p(cov_total_tests) + acs_gender_female +
+  (1|state) + (1|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m12)
+
+m13 <- glmmTMB(
+  target ~ 1 + bs(time,3) + bs(time_in_any_phase, 3) + acs_race_minority + log(pop_density) + 
+  log1p(cov_total_tests) + acs_gender_female + (1|state) + (1+bs(time, 3)|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m13)
+
+m14 <- glmmTMB(
+  target ~ 1 + time + time_in_any_phase + acs_race_minority + log(pop_density) + 
+  log1p(cov_total_tests) + acs_gender_female + (1|state) + (1+time|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m14)
+
+m15 <- glmmTMB(
+  target ~ 1 + time + time_in_any_phase + acs_race_minority + log(pop_density) + 
+  log1p(cov_total_tests) + (1|state) + (1+time+time_in_any_phase|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m15)
+
+m16 <- glmmTMB(
+  target ~ 1 + time + time_in_stay_home + time_in_any_phase + acs_race_minority + log(pop_density) + 
+  log1p(cov_total_tests) + unemployment_rate + (1|state) + (1+time+time_in_any_phase|state_county), 
+  data=df,
+  ziformula= ~1,
+  family=nbinom1
+)
+write_model_rds(m16)
+
+m_models <- list(m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13, m14, m15, m16)
+m_preds <- plot_model_predictions(m_models)
+```
+
+```{r}
+plot_model(model_time, type='re')
+plot_model(model_time, type='est')
+plot_model(model_time, type='pred')
+```
+
+# Cross-Validation
+```{r}
+
+tidy.glmmTMB <- function(mod_obj, type=c('fixef', 'ranef', 'all')) {
+ type_ <- match.arg(type, choice=c('fixef', 'ranef', 'all'))
+ fe <- map_dfr(fixef(mod_obj), enframe, 'term', 'estimate', .id='model')
+ re <- map_dfr(ranef(mod_obj), function(mod) {
+    map_dfr(mod, function(con) as_tibble(con, rownames='term'), .id='group')
+ }, .id='model')
+ if (type_=='all') return (list('ranef'=re, 'fixef'=fe))
+ if (type_ == 'fixef') return(fe)
+ if (type_ == 'ranef') return(re)
+}
+
+# cv
+set.seed(1337)
+cv <- rsample::group_vfold_cv(df, group=county_fip, v=10)
+cv <- mutate(cv, fit = map2(splits, seq_along(splits), function(s, i) {
+  print(sprintf('fitting model %s of %s', i, length(splits)))
+  train <- training(s)
+  glmmTMB(
+    target ~
+      1 + time + time_in_stay_home + time_in_any_phase +
+      acs_race_minority + log(pop_density) + log1p(cov_total_tests) +
+      unemployment_rate + (1|state) + (1+time+time_in_any_phase|state_county), 
+    data=train,
+    ziformula= ~1,
+    family=nbinom1
+  )
+}))
+
+cv <- mutate(cv, preds_train = map2(splits, fit, function(s, m) {
+  p <- predict(m, type = 'conditional')
+  mutate(training(s), prediction = exp(p))
+}))
+
+cv <- mutate(cv, preds_test = map2(splits, fit, function(s, m) {
+  test_df <- testing(s)
+  p <- predict(m, newdata=test_df, allow.new.levels=TRUE)
+  mutate(test_df, prediction = exp(p))
+}))
+
+cv <- mutate(cv, param_estimates = map(fit, tidy, type='all'))
+
+cv %>% select(id, preds) %>% unnest(cols=c(preds)) %>% 
+  qplot(target, prediction,  alpha=0.15, data = . ) +
+  geom_abline(slope=1) + 
+  facet_wrap( ~ id)
+
+coef_summary_order <- cv %>% 
+  mutate(fixef = map(param_estimates, 'fixef')) %>%
+  select(id, fixef) %>%
+  unnest(cols=c(fixef)) %>%
+  mutate(estimate = exp(estimate)) %>%
+  group_by(model, term) %>%
+  summarise(median_estimate = median(estimate), n=n(), .groups='drop') %>%
+  ungroup() %>%
+  arrange(median_estimate) %>%
+  distinct(model, term, median_estimate, n) %>%
+  arrange(median_estimate) %>%
+  mutate(rank = row_number())
+
+cv %>% 
+  mutate(fixef = map(param_estimates, 'fixef')) %>%
+  select(id, fixef) %>%
+  unnest(cols=c(fixef)) %>%
+  mutate(estimate = exp(estimate)) %>%
+  inner_join(coef_summary_order, by=c('term', 'model')) %>%
+  group_split(model) %>% 
+  map(function(df) {
+    mod <- unique(df$model)
+    ggplot(data=df, aes(x=estimate, y=reorder(term, rank))) +
+    geom_density_ridges(
+      jittered_points=T, position=position_points_jitter(height=0, width=0.05),
+      point_shape='|', point_size=2, point_alpha=1, alpha=0.7) +
+    ylab('Feature') +
+    xlab('Effect') +
+    geom_vline(xintercept=1, linetype=2, size=0.5, color='red', alpha=0.75) +
+    ggtitle(glue('Distribution of {mod} Variable Effects Across CV Iterations'))
+  })
+```
+
+# Eval
+```{r}
+cv %>% 
+  select(id, matches('preds')) %>% 
+  gather(k, v, -id) %>% 
+  unnest(cols=c(v)) %>% 
+  select(id, k, state, county, date, target, prediction) %>% 
+  group_by(id, k) %>% 
+  summarise(
+    mae = sum(abs(prediction - target))/n(), 
+    mae_sd = sd(abs(prediction - target)), 
+    .groups='drop'
+  )
+```
+
+```{r}
+#' Run a glmmTMB model via 5-fold cross-validation
+#'
+#' Per fold, this returns:
+#'  - the model object
+#'  - a coefficients table
+#'  - model summary table
+#'  - training performance metrics
+#'  - testing performance metrics
+#'  - the held-out testing data (for, e.g., plotting)
+run_model_vfold <- function(formula, data, ziformula = ~0, seed = NULL, folds = 5L) {
+  if (!is.null(seed))
+    set.seed(seed)
+  group_vfold_cv(data, group = county_fip, v = folds) %>% 
+    future_pmap_dfr(~ {
+      tr <- training(.x)
+      te <- assessment(.x)
+      id <- .y
+      message("Running fold: ", id)
+      model <- glmmTMB(
+        formula, 
+        data = tr,
+        family = glmmTMB::nbinom2(), 
+        ziformula = ziformula)
+      pred_tr <- predict(model, tr, type = "conditional")
+      pred_te <- predict(model, te, type = "conditional", allow.new.levels	= T)
+      metrics_tr <- tribble(
+        ~ metric, ~ value,
+        "ccc",    ccc_vec(tr$target, pred_tr), 
+        "huber",  huber_loss_vec(tr$target, pred_tr), 
+        "mae",    mae_vec(tr$target, pred_tr), 
+        "rsq",    rsq_vec(tr$target, pred_tr)
+      )
+      metrics_te <- tribble(
+        ~ metric, ~ value,
+        "ccc",    ccc_vec(te$target, pred_te), 
+        "huber",  huber_loss_vec(te$target, pred_te), 
+        "mae",    mae_vec(te$target, pred_te), 
+        "rsq",    rsq_vec(te$target, pred_te)
+      )
+      tibble(
+        id = id,
+        object = list(model),
+        tidy = list(suppressMessages(broom.mixed:::tidy.glmmTMB(model))),
+        glance = list(suppressMessages(broom.mixed:::glance.glmmTMB(model))),
+        train = list(metrics_tr),
+        test = list(metrics_te),
+        test_data = list(te)
+      )
+  })
+}
+```
+
