@@ -1,6 +1,6 @@
 ---
 title: "ABT Refine"
-author: "Carlos Blancarte"
+author: "Carlos Blancarte, Tom Shafer"
 date: "Created: 2020-06-07, Updated: `r Sys.Date()`"
 output: html_document
 editor_options: 
@@ -286,10 +286,11 @@ dd <- dd %>%
     lead_unemployment = lead(rollsum(county_daily_unemployment_change, k=7, na.pad=T, align='right'), 7), 
     lag_unemp_ratio = lag_unemployment / (labor_force - county_daily_interp_total_claims) + 1,
     lead_unemp_ratio = lead_unemployment / (labor_force - county_daily_interp_total_claims) + 1,
-    unemployment_pct_delta = lag_unemp_ratio/lead_unemp_ratio
-  ) %>%
+    unemployment_pct_delta = lag_unemp_ratio/lead_unemp_ratio, 
+    unemployment_penetration = unemployed/labor_force, 
+    unemployment_momentum = lag_unemployment/unemployed) %>%
   ungroup() %>%
-  filter(!is.na(confirmed_cum_lag_7))
+  filter(!is.na(confirmed_cum_lag_7)) # removes first 7 obs for each county
 ```
 
 ### What Does our Target Capture? 
@@ -672,11 +673,6 @@ Finally, normalize to the county population:
 
 ```{r}
 dd <- dd %>% 
-  group_by(state, county) %>%
-  mutate(
-    unemployment_rate = unemployed/labor_force, 
-    unemployment_penetration = lag(unemployed, 7)/unemployed) %>%
-  ungroup() %>% 
   mutate(across(c(labor_force, unemployed), ~ . / acs_pop_total))
 ```
 
