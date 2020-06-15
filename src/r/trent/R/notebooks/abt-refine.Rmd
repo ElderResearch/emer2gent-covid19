@@ -261,6 +261,9 @@ addition to:
      and the total number of infections  
   - `infection_penetration*`: Confirmed number of infections scaled by county
      population  
+  - `unemployment_pct_delta*`: The percentage change in unemployment (scaled by
+     labor force) from the previous 7 day period to the proceeding 7 day
+     period.  
   
 * : a constant of `1` is added to these calculations for numerical stability
 
@@ -278,7 +281,12 @@ dd <- dd %>%
     confirmed_new_cases_7day_sum_lag7 = lag(confirmed_new_cases_7day_sum, 7),
     infection_7day_pct_delta = confirmed_new_cases_7day_sum_lead7/confirmed_new_cases_7day_sum,
     infection_momentum = confirmed_new_cases_7day_sum_lag7/(confirmed_cum + 1), 
-    infection_penetration = (confirmed_cum + 1)/acs_pop_total
+    infection_penetration = (confirmed_cum + 1)/acs_pop_total, 
+    lag_unemployment = lag(rollsum(county_daily_unemployment_change, k=7, na.pad=T, align='right'), 7), 
+    lead_unemployment = lead(rollsum(county_daily_unemployment_change, k=7, na.pad=T, align='right'), 7), 
+    lag_unemp_ratio = lag_unemployment / (labor_force - county_daily_interp_total_claims) + 1,
+    lead_unemp_ratio = lead_unemployment / (labor_force - county_daily_interp_total_claims) + 1,
+    unemployment_pct_delta = lag_unemp_ratio/lead_unemp_ratio
   ) %>%
   ungroup() %>%
   filter(!is.na(confirmed_cum_lag_7))
