@@ -200,6 +200,7 @@ data <- data %>%
   mutate(time_in_policy_2 = cumsum(policy_phase_2) * policy_phase_2) %>%
   mutate(time_in_policy_3 = cumsum(policy_phase_3) * policy_phase_3) %>%
   mutate(time_in_any_phase = cumsum(policy_any_phase) * policy_any_phase) %>%
+  mutate(travel_limit = factor(travel_limit, levels=c('None Issued', '0', '1'))) %>%
   ungroup() %>%
   filter(date >= first_case_date)
 
@@ -540,8 +541,9 @@ m5 <- glmmTMB(
 write_model_rds(m5)
 
 m6 <- glmmTMB(
-  target ~ 1 + bs(time,3)*policy_any + acs_race_minority + log(pop_density) + log1p(cov_total_tests) + acs_gender_female +
-  (1|state) + (1+time|state_county), 
+  target ~ 1 + bs(time,3)*policy_any + acs_race_minority + log(pop_density) +
+    log1p(cov_total_tests) + acs_gender_female +
+    (1|state) + (1+time|state_county), 
   data=train_df,
   ziformula= ~1,
   family=nbinom1
@@ -549,8 +551,9 @@ m6 <- glmmTMB(
 write_model_rds(m6)
 
 m7 <- glmmTMB(
-  target ~ 1 + bs(time,3)*time_in_stay_home + acs_race_minority + log(pop_density) + log1p(cov_total_tests) + acs_gender_female +
-  (1|state) + (1|state_county), 
+  target ~ 1 + bs(time,3)*time_in_stay_home + acs_race_minority + log(pop_density) +
+    log1p(cov_total_tests) + acs_gender_female +
+    (1|state) + (1|state_county), 
   data=train_df,
   ziformula= ~1,
   family=nbinom1
@@ -635,12 +638,14 @@ m14 <- glmmTMB(
 write_model_rds(m14)
 
 m15 <- glmmTMB(
-  target ~ 1 + time + time_in_stay_home + time_in_any_phase +
-    acs_race_minority + acs_age_gt_65 + 
+  target ~ 1 + time * policy_any + acs_race_minority +
+    acs_age_gt_65 + acs_age_25_54 + 
     acs_gender_female + log(pop_density) + 
-    log1p(cov_total_tests)  +
+    log1p(cov_total_tests) + log1p(cov_total_tests):time + 
+    time_in_stay_home + time_in_policy_1 + time_in_policy_2 + time_in_policy_3 +
+    travel_limit + 
     (1|state) +
-    (1+time+time_in_any_phase|state_county),
+    (1+policy_any|state_county), 
   data=train_df,
   ziformula= ~1,
   family=nbinom1
@@ -648,11 +653,9 @@ m15 <- glmmTMB(
 write_model_rds(m15)
 
 
-m_models <- list(m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12,
+m_models <- list(null_model, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12,
                  m13, m14, m15)
 m_preds <- plot_model_predictions(m_models)
-
-
 
 perf <- map(m_models, eval_predictions, df=train_df)
 perf2 <- map(m_models, eval_predictions, df=test_df)
