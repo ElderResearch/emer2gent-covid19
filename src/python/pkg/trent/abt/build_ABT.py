@@ -148,8 +148,7 @@ def join_all_data():
     ABT_V3.drop(ABT_V3.filter(regex="_dropMe$").columns.tolist(), axis=1, inplace=True)
 
     # drop proxy_fip & state fips & county fips
-    del ABT_V3["proxy_fip"]
-    del ABT_V3["Unnamed: 0"]
+    ABT_V3 = ABT_V3.drop(["proxy_fip","Unnamed: 0"], axis=1, errors='ignore')
 
     print("Added Census data:")
     print(f"ABT.shape ={ABT_V3.shape}")
@@ -279,7 +278,8 @@ if __name__ == "__main__":
         columns={"Date": "date", "County Name": "county", "State": "state"},
     )
     # Drop State Code -> already exists as state_code
-    del DoL_df["State Code"]
+    DoL_df = DoL_df.drop(["State Code"], axis=1, errors='ignore')
+
     # Import tracking data:
     tracking_df = pd.read_csv(DATA_DIR / "covidtracking.csv")
     print(f"tracking_df.shape ={tracking_df.shape}")
