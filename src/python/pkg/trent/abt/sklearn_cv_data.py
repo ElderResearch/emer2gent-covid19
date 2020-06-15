@@ -1,10 +1,42 @@
-"""Datasets and dataloaders for PyTorch."""
+"""Datasets and dataloaders for sklearn regression chain model."""
 
 from typing import Generator, Iterable, Tuple
+
+import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import random
+
+loader_path = Path(__file__).resolve().parents[2]
+
+# Make sure these match the dual_loss_abt.py script inputs
+features = [
+    "travel_limit",
+    "stay_home",
+    "educational_fac",
+    "phase_1",
+    "phase_2",
+    "phase_3",
+    "tmpf_mean",
+    "relh_mean",
+    "acs_gender_female",
+    "acs_race_minority",
+    "young_age",
+    "old_age",
+    "pop_density", 
+    "cov_testing_pos_prop" 
+]
+
+weights = [
+    "acs_pop_total"
+]
+
+targets = [
+    'infection_7day_pct_delta',
+    'unemployment_pct_delta'
+]
 
 class RepeatedStratifiedGroupKFoldOrchestrator:
     """Orchestrate repeated, stratified, group-wise, K-fold CV.
@@ -38,7 +70,7 @@ class RepeatedStratifiedGroupKFoldOrchestrator:
             srcfile (str): path to the ABT CSV
             folds (int): number of CV folds per repeat
             repeats (int): number of repeats, shuffling each time
-            batch_size (int): eventual torch dataloader batch size
+            batch_size (int): eventual pandas dataloader batch size
         """
         # Load the data
         self.data = pd.read_csv(srcfile)
@@ -130,35 +162,16 @@ class _ABTDataset():
             data (DataFrame): data from upstream, to be split into
                 (X, y, weight) triples
         """
-        # NB: simple imputation for infection_momentum
+        
         self.data = data
-        self.data.loc[self.data.infection_momentum.isna(), "infection_momentum"] = 1
 
         # Pre-allocate tensors
         self.zmat = np.sqrt(self.data["acs_pop_total"]) / np.sum(np.sqrt(self.data["acs_pop_total"]))
 
-        self.ymat = self.data[["infection_target", "unemployment_target"]].values.astype(float)
+        self.ymat = self.data[targets].values.astype(float)
     
         self.xmat = self.data[
-                [
-                    "travel_limit",
-                    "stay_home",
-                    "educational_fac",
-                    "phase_1",
-                    "phase_2",
-                    "phase_3",
-                    "tmpf_mean",
-                    "relh_mean",
-                    "male_proportion",
-                    "Percentage_white",
-                    "young_age",
-                    "mid_age",
-                    "old_age",
-                    "infection_penetration",
-                    "infection_momentum",
-                    "unemployment_rate",
-                    "unemployment_penetration"
-                ]
+                features
             ].values.astype(float)
             
 
@@ -173,3 +186,7 @@ class _ABTDataset():
     def __getitem__(self, i) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """Produce 3-tuples of features, responses, and weights."""
         return (self.xmat, self.ymat, self.zmat)
+
+
+def abt_info():
+    return features, len(features)
