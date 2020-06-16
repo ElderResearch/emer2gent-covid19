@@ -30,6 +30,13 @@
       "Repository": "CRAN",
       "Hash": "4744be45519d675af66c28478720fce5"
     },
+    "HDInterval": {
+      "Package": "HDInterval",
+      "Version": "0.2.2",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "3b986a53325a1d95610b8d86a284dac0"
+    },
     "MASS": {
       "Package": "MASS",
       "Version": "7.3-51.5",
@@ -92,6 +99,13 @@
       "Source": "Repository",
       "Repository": "CRAN",
       "Hash": "de4ff340a00b5490273a2c8107e7eb76"
+    },
+    "arrayhelpers": {
+      "Package": "arrayhelpers",
+      "Version": "1.1-0",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "3d4e52d458784c335af3846f2de64f75"
     },
     "askpass": {
       "Package": "askpass",
@@ -940,6 +954,13 @@
       "Repository": "CRAN",
       "Hash": "0759e6b6c0957edb1311028a49a35e76"
     },
+    "svUnit": {
+      "Package": "svUnit",
+      "Version": "1.0.3",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "2edc6be3716db6d37cc61038a524f8d6"
+    },
     "sys": {
       "Package": "sys",
       "Version": "3.3",
@@ -960,6 +981,13 @@
       "Source": "Repository",
       "Repository": "CRAN",
       "Hash": "1c61e4cad000e03b1bd687db16a75926"
+    },
+    "tidybayes": {
+      "Package": "tidybayes",
+      "Version": "2.0.3",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "bb8e3887bf7b75a30735c2d9d21a6180"
     },
     "tidyr": {
       "Package": "tidyr",
