@@ -226,7 +226,7 @@ plot_boruta <- function(boruta_obj) {
         replace_na(decision, "Permuted"), 
         levels = c("Confirmed", "Tentative", "Rejected", "Permuted")
     )) %>% 
-    mutate(feature = fct_rev(fct_reorder(factor(feature), importance, median))) %>% 
+    mutate(feature = (fct_reorder(factor(feature), importance, median))) %>% 
     ggplot(aes(feature, importance, fill = decision)) + 
     geom_boxplot() + 
     coord_flip() + 

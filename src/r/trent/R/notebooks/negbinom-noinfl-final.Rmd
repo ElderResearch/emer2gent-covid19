@@ -87,28 +87,30 @@ In the third step we select and normalize model inputs. We transform and standar
 
 ## Candidate Model Inputs
 
-Our candidate model inputs are listed in the table below. Note that we do not include, e.g., popular mobility data sets or economic data in this model. As these data are strongly impacted by policy effects, including them in the model would risk masking the policy effects themselves. We also do not include seasonal corrections such as the day of the week, which was rejected by the Boruta algorithm during development. Because we target the week-over-week difference in infections, any constant day-of-week reporting difference will be removed automatically.
+Our candidate model inputs are listed in the table below. Note that we do not include, e.g., popular mobility data sets or economic data in this model. As these data are strongly impacted by policy effects, including them in the model would risk masking the policy effects themselves. We also do not include seasonal corrections such as the day of the week, which was rejected by the Boruta algorithm during development. Because we target the week-over-week difference in infections, any near-constant day-of-week reporting difference will likely be differenced out automatically.
+
+Because our focus is directly upon policy, we remove all records for each county prior to their first registered infection. This has the effect of also removing the less than 5% of counties that have no implemented policy according to our data.
 
 ```{r, echo=F}
 ftrs <- tibble::tribble(
   ~ "Input variable", ~"Input type", ~"Description",
-  "target",            "Target",      "Week-over-week $\\Delta$ in cumulative infections" ,
-  "policy",            "Treatment",   "Governmental policy (none, stay-at-home, phase 1--3)",
-  "time",              "Covariate",   "Days since first reported infection" ,
-  "time_phase",        "Covariate",   "Days since current policy was enacted" ,
-  "temp",              "Covariate",   "Daily mean temperature" ,
-  "humid",             "Covariate",   "Daily mean relative humidity" ,
-  "density",           "Covariate",   "County population density" ,
-  "pop",               "Covariate",   "County population" ,
-  "minority",          "Covariate",   "County fraction of minority inhabitants" ,
-  "female",            "Covariate",   "County fraction of female inhabitants" ,
-  "income",            "Covariate",   "Median county household income" ,
-  "age_le_24",         "Covariate",   "County fraction of inhabitants age $\\le 24$" ,
-  "age_25_54",         "Covariate",   "County fraction of inhabitants age 25--54" ,
-  "age_55_84",         "Covariate",   "County fraction of inhabitants age 55-84" ,
-  "age_85_ge",         "Covariate",   "County fraction of inhabitants age $\\ge 85$" ,
-  "tests_total",       "Covariate",   "State cumulative COVID-19 tests" ,
-  "tests_pos",         "Covariate",   "State cumulative COVID-19 positive test fraction" 
+  "`target`",            "Target",      "Week-over-week $\\Delta$ in cumulative infections" ,
+  "`policy`",            "Treatment",   "Governmental policy (none, stay-at-home, phase 1--3)",
+  "`time`",              "Covariate",   "Days since first reported infection" ,
+  "`time_phase`",        "Covariate",   "Days since current policy was enacted" ,
+  "`temp`",              "Covariate",   "Mean temperature" ,
+  "`humid`",             "Covariate",   "Mean relative humidity" ,
+  "`density`",           "Covariate",   "County population density" ,
+  "`pop`",               "Covariate",   "County total population" ,
+  "`minority`",          "Covariate",   "County fraction of minority inhabitants" ,
+  "`female`",            "Covariate",   "County fraction of female inhabitants" ,
+  "`income`",            "Covariate",   "Median county household income" ,
+  "`age_le_24`",         "Covariate",   "County fraction of inhabitants age $\\le 24$" ,
+  "`age_25_54`",         "Covariate",   "County fraction of inhabitants age 25--54" ,
+  "`age_55_84`",         "Covariate",   "County fraction of inhabitants age 55-84" ,
+  "`age_85_ge`",         "Covariate",   "County fraction of inhabitants age $\\ge 85$" ,
+  "`tests_total`",       "Covariate",   "State cumulative COVID-19 tests" ,
+  "`tests_pos`",         "Covariate",   "State cumulative COVID-19 positive test fraction" 
 )
 
 knitr::kable(ftrs)
@@ -172,7 +174,7 @@ assert_that(all(!is.na(abt)))
 
 ## Normalization
 
-We normalize our data by applying $\log$ and $\log(1+x)$ transformations to highly skewed inputs, including county-level Census proportions. We also apply a [quantile transformation][qn] to both of our time-related inputs. Following [Gelman][gelman-08], we standardize our continuous inputs by centering and then scaling by two standard deviations.
+We normalize our data by applying $\log$ and $\log(1+x)$ transformations to highly skewed inputs, including county-level demographic proportions. We also apply a [quantile transformation][qn] to both of our time-related inputs. Following [Gelman][gelman-08], we standardize our continuous inputs by centering and then scaling by two standard deviations.
 
 [qn]: https://stats.stackexchange.com/a/327102/
 [gelman-08]: http://www.stat.columbia.edu/~gelman/research/published/standardizing7.pdf
@@ -266,7 +268,7 @@ plot_boruta(bb$bb) + theme(legend.position = "top", text = element_text(size = 8
 
 ## Correlation Assessment
 
-The all-relevant feature test does not highlight issues with collinearity, so we also examine our data for highly correlated features. The table below lists features with correlation coefficients $|r|\ge 0.7$, a heuristic threshold for excluding inputs from the model.
+The all-relevant-feature test will not highlight issues with collinearity, so we also examine our data for highly correlated features. The table below lists features with correlation coefficients $|r|\ge 0.7$, a heuristic threshold for excluding inputs from the model.
 
 ```{r correlations, echo=F}
 correlations <- abt %>% 
@@ -293,6 +295,10 @@ abt <- abt %>% select(-c(age_55_84_sc, density_sc))
 ```
 
 ```{r corrplot, echo = F}
+correlations <- abt %>% 
+  select(ends_with("_sc")) %>% 
+  cor()
+
 corrplot::corrplot(
   correlations, 
   method = "color", 
@@ -428,13 +434,13 @@ model_fe_plot +
   theme(legend.position = "none", aspect.ratio = 5 / 3, text = element_text(size = 8))
 ```
 
+Climate inputs appear not to have a meaningful impact in the model, nor do most age categories. We do notice an effect related to median household income and an even larger effect tied to minority representation (defined as the proportion of nonwhite individuals as reported in county-level U.S. Census data). Other large effects, such as the relationship between the growth of cases and population or increasing COVID-19 testing are not especially surprising. We defer a discussion of policy effects to the next section, but we do note that the coefficient for "time since first reported infection" is negative; this should be taken together, however, with the positive coefficient describing the lack of any policy being issued. We provide the coefficients themselves in the table below, aggregated across folds:
+
 ```{r, include=F}
 # Overdispersion
 rvals <- map_dbl(model$object, sigma)
 rvals_str <- sprintf("%.02f \\pm %.02f", mean(rvals), sd(rvals))
 ```
-
-The overdispersion parameter $r$ is similarly stable; averaged across folds, it takes the value $r = `r rvals_str`$. We also provide the coefficients themselves in the table below, aggregated across folds:
 
 ```{r, echo=F}
 model %>% 
@@ -443,15 +449,15 @@ model %>%
   select(term, estimate, std.error) %>% 
   transmute(
     Term = sprintf("`%s`", str_to_lower(str_remove_all(term, "[\\(\\)]"))),
-    `Fitted Value` = sprintf("$%.03f(%.03f)$", estimate, std.error)
+    `Fitted Value` = sprintf("$%.03f \\pm %.03f$", estimate, std.error)
   ) %>% 
   arrange(Term) %>% 
   knitr::kable(align = c("l", "r"))
 ```
 
-Finally, we plot per-state random effects for one of our cross-validation folds, with $\pm 2 \sigma$ confidence intervals.
+The overdispersion parameter $r$ is similarly stable; averaged across folds, it takes the value $r = `r rvals_str`$. Finally, we plot per-state random effects for one of our cross-validation folds, with $\pm 2 \sigma$ confidence intervals.
 
-```{r, echo=F, fig.height=7}
+```{r, echo=F, fig.height=8}
 model_re_plot[[2]]$data %>% 
   as_tibble() %>% 
   select(estimate:term) %>% 
@@ -483,13 +489,13 @@ model_re_plot[[2]]$data %>%
 
 ## Interactions
 
-We see from the above coefficient tables that policy effects contribute over time to the (local) progression or suppression of the COVID-19 epidemic in a complex way. Stay-at-home orders, for example, are associated with higher rates of infection on average, perhaps because they are enacted in response to quickly growing case rates, but their negative interaction with time shows they are simultaneously associated with a lessening of this rate over time. Note also that the coefficient `time_sc`, the time since the first measured infection in a county, is negative as well.
+We see from the above coefficient tables that policy effects contribute over time to the (local) progression or suppression of the COVID-19 epidemic in a complex way. Stay-at-home orders, for example, are associated with higher rates of infection on average, perhaps because they are enacted in response to quickly growing case rates, but their negative interaction with time shows they are simultaneously associated with a lessening of this rate over time. The effect of the interactions between policy and time are plotted below.
 
 ```{r, echo=F, fig.width=6}
 model_int2_plot + theme(text = element_text(size = 8))
 ```
 
-The nonlinear transformations of time variables further complicate real understanding of these results from tables, so we demonstrate the effect below by sampling from the fitted model coefficients for the intercept, policy, and time since a policy was enacted, holding other predictors at their average values (i.e., zero):
+The nonlinear transformations applied to the time-related variables further complicate real understanding of these results from tables, so we demonstrate the effect below by sampling from the fitted model coefficients for the intercept, policy, and time since a policy was enacted, holding other predictors at their average values (i.e., zero):
 
 $$
 \begin{aligned}
@@ -497,9 +503,10 @@ y & \sim \mathrm{negbinom}(r, s) \\
 \log(s) &  = \beta_0 + \beta_\mathrm{policy} p + \beta_{\mathrm{policy}, t} p \cdot t,
 \end{aligned}
 $$
-Draws for the coefficients are taken from normal distributions parameterized by each coefficient's fitted parameters. We see that, as expected, stay-at-home orders are associated with decreasing case rates; no policy being issued is associated with a growth in cases. The effects of phased reopening are less clear, especially any difference in real effect among them.
 
-```{r sim1, echo=F, fig.width=5}
+Draws for the coefficients are taken from normal distributions parameterized by each coefficient's fitted parameters, and we map these results onto the original, not-scaled model inputs. The figures below chart trajectories over thirty days, with confidence bands set to $0.5$ and $0.89$.
+
+```{r sim1, echo=F, fig.width=6}
 # intercept + policy + policy_time
 
 # Extract coefficients
@@ -524,7 +531,9 @@ times <- abt %>%
   filter(time_phase <= 30)
 
 # Random draws
-samples <- map_dfr(1:50, ~ {
+set.seed(RANDOM_SEED)
+
+samples <- map_dfr(1:100, ~ {
   times %>% 
     rowwise() %>% 
     mutate(
@@ -591,15 +600,17 @@ samples %>%
   scale_color_discrete(guide = F) + 
   scale_fill_discrete(guide = F) + 
   scale_alpha_manual(guide = F, values = c("0.5" = 0.6, "0.89" = 0.3)) + 
-  labs(x = "Time in phase (days)", y = "Growth in infection count") + 
+  labs(x = "Time in phase (days)", y = "Change in week-over-week infection count") + 
   theme(text = element_text(size = 8))
 ```
 
-Or, if we applied the same to a county with a higher average number of infections (note the differing scales on the $y$-axis):
+We see that, as expected, stay-at-home orders are associated with decreasing case rates; no policy being issued is associated with a growth in cases. The effects of phased reopening are less clear, however. For comparison, consider an example wherein a county is associated with a higher average case rate. This example draws out the distinction between the various policy effects (note, now, the differing scales on the $y$-axis). Again, these figures are produced with the effect of time since first case report (`time_sc`) set to zero (i.e., its median scaled value).
 
-```{r sim2, echo=F, fig.width=5}
+```{r sim2, echo=F, fig.width=6}
+set.seed(RANDOM_SEED + 1)
+
 # Random draws
-samples <- map_dfr(1:50, ~ {
+samples <- map_dfr(1:100, ~ {
   times %>% 
     rowwise() %>% 
     mutate(
@@ -666,5 +677,10 @@ samples %>%
   scale_color_discrete(guide = F) + 
   scale_fill_discrete(guide = F) + 
   scale_alpha_manual(guide = F, values = c("0.5" = 0.6, "0.89" = 0.3)) + 
-  labs(x = "Time in phase (days)", y = "Growth in infection count")
+  labs(x = "Time in phase (days)", y = "Change in week-over-week infection count") + 
+  theme(text = element_text(size = 8))
 ```
+
+## Conclusions
+
+As stated in the executive summary, this analysis suggests that a phased approach to reopening has succeeded in continuing the suppression of infection rates, though not as effectively as stay-at-home orders have previously. Continued monitoring will remain essential as conditions, policy, and adherence to policy change over time.
