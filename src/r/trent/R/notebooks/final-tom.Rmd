@@ -1,12 +1,10 @@
 ---
-title:  "Model Exploration Report DRAFT"
+title:  "Emergent Analysis, Phased Reopening"
 author: "Elder Research, Inc."
-date:   "Updated 2020-06-13"
+date:   "15 June, 2020"
 output: 
-  html_document
-#  pdf_document: 
-#    number_sections: yes
-#    keep_tex: yes
+  pdf_document:
+    template: template.tex
 ---
 
 ```{r setup, include=FALSE}
@@ -17,9 +15,9 @@ r_root <- rprojroot::find_rstudio_root_file()
 
 knitr::opts_knit$set(root.dir = file.path(r_root))
 knitr::opts_chunk$set(warning = FALSE, message = FALSE)
-knitr::opts_chunk$set(fig.width = 5, fig.height = 4, fig.align = "center")
+knitr::opts_chunk$set(fig.width = 4, fig.height = 4, fig.align = "center")
 
-ggplot2::theme_set(ggplot2::theme_minimal())
+ggplot2::theme_set(ggplot2::theme_minimal(base_size = 9))
 
 
 # R session config -------------------------------------------------------------
@@ -36,11 +34,10 @@ suppressPackageStartupMessages({
   library(glue)
   library(glmmTMB)
   library(furrr)
-  # library(sjPlot)
-  # library(broom.mixed)
+  library(broom.mixed)
+  library(sjPlot)
+  library(tidybayes)
 })
-
-# plan(multiprocess)
 
 
 # Global parameters ------------------------------------------------------------
@@ -54,18 +51,68 @@ FORCE_MODEL_RUN <- FALSE
 source(here("R/helpers.R"))
 ```
 
+<!--- --->
+
+# Executive Summary
+
+We fit count regression models to a large data set containing policy directives, daily cumulative reported COVID-19 infection counts, county-level demographics and weather data, and state-level COVID-19 testing statistics across the 50 United States and the District of Columbia. We fit a hierarchical negative-binomial regression model that predicts daily, county-level week-over-week growth in reported COVID-19 infections to quantify the effect of varying policy directives on the control of the COVID-19 epidemic.
+
+This analysis, detailed in the sequel, leads to the following tentative conclusions:
+
+**Stay-home orders are effective.**
+Stay-home directives are unambiguously related to suppression of the spread of COVID-19. The enacting of these measures corresponds with a continuing decrease in the rate of new infections over time.
+
+**Phased reopening procedures provide weaker epidemic suppression but remain largely effective.**
+Reopenings across Phases 1--3 are also correlated with fewer reported infections, but appear less effective than stay-at-home orders.
+
+The remainder of the report briefly discusses our data, preparations, and modeling.
+Source code is publicly available on [GitHub][gh].
+
+[gh]: https://github.com/ElderResearch/emer2gent-covid19
 
 <!--- --->
 
-# Summary of Findings
+# Data Sets and Preparation
 
-<!--- --->
+Our data pipeline contains three steps:
 
-# Data Sources and Preparation
+ 1. Collect original data sources into a single analytics base table (ABT).
+ 2. Perform additional checks and imputations of the ABT to fill missing values.
+ 3. Select and normalize features for fitting our specific model.
 
-We're using the ABT created with Python upstream.
+Original data sources are listed in `data/README.md`
 
-## Further Adjustments
+The first step of our pipeline, orchestrated by `build_ABT.py`, collects data from the various sources into a single ABT. The second step is orchestrated by the R notebook `abt-refine.Rmd`; compiling ("knitting") the notebook applies several imputations and transformations to the data while also generating corresponding documentation.
+In the third step we select and normalize model inputs. We transform and standardize variables, pass candidate features through an all-relevant-feature selection test, and, finally, remove highly-correlated predictors to stabilize model fits.
+
+## Candidate Model Inputs
+
+Our candidate model inputs are listed in the table below. Note that we do not include, e.g., popular mobility data sets or economic data in this model. As these data are strongly impacted by policy effects, including them in the model would risk masking the policy effects themselves. We also do not include seasonal corrections such as the day of the week, which was rejected by the Boruta algorithm during development. Because we target the week-over-week difference in infections, any constant day-of-week reporting difference will be removed automatically.
+
+```{r, echo=F}
+ftrs <- tibble::tribble(
+  ~ "Input variable", ~"Input type", ~"Description",
+  "target",            "Target",      "Week-over-week $\\Delta$ in cumulative infections" ,
+  "policy",            "Treatment",   "Governmental policy (none, stay-at-home, phase 1--3)",
+  "time",              "Covariate",   "Days since first reported infection" ,
+  "time_phase",        "Covariate",   "Days since current policy was enacted" ,
+  "temp",              "Covariate",   "Daily mean temperature" ,
+  "humid",             "Covariate",   "Daily mean relative humidity" ,
+  "density",           "Covariate",   "County population density" ,
+  "pop",               "Covariate",   "County population" ,
+  "minority",          "Covariate",   "County fraction of minority inhabitants" ,
+  "female",            "Covariate",   "County fraction of female inhabitants" ,
+  "income",            "Covariate",   "Median county household income" ,
+  "age_le_24",         "Covariate",   "County fraction of inhabitants age $\\le 24$" ,
+  "age_25_54",         "Covariate",   "County fraction of inhabitants age 25--54" ,
+  "age_55_84",         "Covariate",   "County fraction of inhabitants age 55-84" ,
+  "age_85_ge",         "Covariate",   "County fraction of inhabitants age $\\ge 85$" ,
+  "tests_total",       "Covariate",   "State cumulative COVID-19 tests" ,
+  "tests_pos",         "Covariate",   "State cumulative COVID-19 positive test fraction" 
+)
+
+knitr::kable(ftrs)
+```
 
 ```{r abt_adjust, include=F}
 # Load the ABT
@@ -73,52 +120,64 @@ abt <- vroom::vroom(here("data/abt_prepped.csv"))
 
 # Add new features and change existing ones
 abt <- abt_fe_time_days_since_inf1(abt)
+abt <- abt_fe_add_time_phase(abt)
 abt <- abt_fe_acs_median_hh_inc_10k(abt)
 abt <- abt_fe_add_cov_pos_tests_frac(abt)
 abt <- abt_fe_add_coarse_age_bins(abt)
 
-# Choose columns to keep
-keep_columns <- c(
-  # ID, time, target
-  "state_code", "county_fip", "state", "county", 
-  "date", 
-  "target", 
-  # Treatment
-  "policy_recoded" = "policy",
-  # Covariates
-  "time_days_since_inf1",
-  "tmpf_mean", "relh_mean", 
-  # pop density is correlated to total pop @ 0.83, 
-  # so keep density in the model as I think it's more 'physical'
-  "pop_density",
-  # "acs_pop_total",
-  # Keep the more at risk folks, correlated with <= 24
-  # "acs_age_le_24",
-  "acs_age_25_54", "acs_age_55_84", "acs_age_85_ge", 
-  "acs_race_minority", 
-  "acs_gender_female",
-  "acs_median_hh_inc_10k", 
-  "cov_total_tests", "cov_pos_tests_frac"
-)
-
-# Subset columns and rows
-# We keep rows after 1st infection, and 
-# policy is a factor relative to none_issued
 abt <- abt %>% 
-  select(all_of(keep_columns)) %>% 
-  filter(time_days_since_inf1 >= 0) %>% 
-  mutate(policy_recoded = factor(policy_recoded, levels = c(
-    "none_issued", "phase_1", "phase_2", "phase_3", "stay_home")
+  select(
+    state_code, county_fip, state, county, date, 
+    # target
+    target, 
+    # treatment
+    policy, 
+    # time
+    time = time_days_since_inf1, 
+    time_phase,
+    # weather
+    temp = tmpf_mean, 
+    humid = relh_mean, 
+    # demography
+    density = pop_density, 
+    pop = acs_pop_total,
+    minority = acs_race_minority,
+    female = acs_gender_female,
+    income = acs_median_hh_inc_10k,
+    starts_with("acs_age"),
+    tests_total = cov_total_tests,
+    tests_pos = cov_pos_tests_frac,
+    # econ_labor_force = labor_force,
+    # econ_unempl = unemployed
+  ) %>% 
+  rename_with(
+    ~ str_remove(., "^acs_"), 
+    starts_with("acs_age")
+  ) %>% 
+  # Remove the old age bins (we have new, bigger ones)
+  select(-c(age_25_34:age_75_84))
+
+# We keep rows after 1st infection; policy is a factor relative to none_issued
+abt <- abt %>% 
+  filter(time >= 0) %>% 
+  mutate(policy = factor(policy, levels = c(
+    "none_issued", 
+    "phase_1", "phase_2", "phase_3", 
+    "stay_home")
   ))
 
 # ABT checks go here
 assert_that(all(!is.na(abt)))
 ```
 
-## Standardization
+## Normalization
 
-Re-standardize, etc.
-http://www.stat.columbia.edu/~gelman/research/published/standardizing7.pdf
+We normalize our data by applying $\log$ and $\log(1+x)$ transformations to highly skewed inputs, including county-level Census proportions. We also apply a [quantile transformation][qn] to both of our time-related inputs. Following [Gelman][gelman-08], we standardize our continuous inputs by centering and then scaling by two standard deviations.
+
+[qn]: https://stats.stackexchange.com/a/327102/
+[gelman-08]: http://www.stat.columbia.edu/~gelman/research/published/standardizing7.pdf
+
+Prior to normalization, several inputs show irregular distributions:
 
 ```{r std_before, echo=F}
 abt %>%
@@ -126,39 +185,56 @@ abt %>%
   pivot_longer(everything()) %>% 
   ggplot(aes(value)) + 
   geom_histogram(bins = 30) + 
-  facet_wrap(~ name, scales = "free")
+  facet_wrap(~ name, scales = "free") + 
+  scale_x_continuous(labels = NULL) + 
+  scale_y_continuous(labels = NULL) + 
+  labs(x = NULL, y = NULL) + 
+  theme(text = element_text(size = 8))
 ```
 
 ```{r standardize, include=F}
 # Transform
 abt <- abt %>% 
   mutate(
-    across(c(pop_density, starts_with("acs")), log),
-    across(starts_with("cov"), log1p)
+    # Copy every input variable to a "scaled" copy
+    across(c(where(is.numeric), -target, -county_fip), 
+           ~ ., .names = "{col}_sc"
+    ),
+    # Log transform select columns
+    across(matches("tests_.*_sc"), log1p),
+    across(c(
+      matches("age_.*_sc"), 
+      matches("econ_.*_sc"), 
+      density_sc, female_sc, income_sc, pop_sc, minority_sc
+    ), log),
+    # Rank transform times
+    across(c(matches("time.*_sc")), rank_norm)
   )
 
 # Standardize
-standardize_lookup <- abt %>% 
-  select(where(is.numeric), -county_fip, -target) %>% 
-  pivot_longer(everything(), "feature") %>% 
-  group_by(feature) %>% 
-  summarize(mean = mean(value), sd = sd(value), .groups = "drop")
-
-abt <- mutate(abt, across(all_of(standardize_lookup$feature), standardize))
+abt <- abt %>% mutate(across(ends_with("_sc"), standardize))
 ```
+
+After normalization, however, all predictors are approximately normally distributed, though a few remain left or right skewed.
 
 ```{r std_after, echo=F}
 abt %>%
-  select(where(is.numeric), -county_fip, -target) %>% 
+  select(ends_with("_sc")) %>% 
   pivot_longer(everything()) %>% 
   ggplot(aes(value)) + 
   geom_histogram(bins = 30) + 
-  facet_wrap(~ name, scales = "free")
+  facet_wrap(~ name, scales = "free") + 
+  scale_x_continuous(labels = NULL) + 
+  scale_y_continuous(labels = NULL) + 
+  labs(x = NULL, y = NULL)
 ```
 
 
-## All-Relevant Feature Exploration
+## All-Relevant Feature Selection
 
+After normalization we pass the data through a regression-tree-based all-relevant feature selection algorithm called [_Boruta_][Boruta]. The Boruta algorithm uses a large collection of random forest models to carry out permutation tests against model inputs, attempting to tease out whether the "real" data are more useful to a model than randomly reshuffled copies that, by design, have no true association with the target. During model development we also run this test to guard against overly noisy inputs.
+
+[Boruta]: http://www.jstatsoft.org/v36/i11/
 
 ```{r boruta_run, include=F}
 bb <- cache_operation(here("data/final/boruta_20k.rds"), {
@@ -166,10 +242,11 @@ bb <- cache_operation(here("data/final/boruta_20k.rds"), {
   
   sample_counties <- abt %>% 
     distinct(county_fip) %>% 
-    sample_n(275)
+    sample_n(1000)
   
+  # Regress onto the scaled variables
   bb <- semi_join(abt, sample_counties, by = "county_fip") %>% 
-    select(-c(date:county)) %>% 
+    select(target, ends_with("_sc")) %>% 
     Boruta::Boruta(target ~ ., data = ., maxRuns = 20, doTrace = 2)
   
   list(bb = bb, sample_counties = sample_counties)
@@ -181,38 +258,39 @@ bb_obs <- abt %>%
   nrow()
 ```
 
-Run Boruta against a random sample 275 counties (`r scales::comma(bb_obs)`).
-We sample entire per-county trajectories rather than arbitrary random rows.
-Boruta runs permutation tests against the input features using Random 
-Forests to identify all _relevant_ features.
+We run this feature selector against a random sample of 1,000 counties ($`r scales::comma(bb_obs)`$ observations), or nearly one-third of our data. We sample entire trajectories containing all data points for each county. As shown in the figure below, all features are considered acceptable from this perspective; each model input demonstrates predictive value above and beyond performance demonstrated by the "shadow" inputs.
 
-Boruta results.
-
-```{r boruta_plot, echo = F}
-plot_boruta(bb$bb)
+```{r boruta_plot, echo = F, fig.width=4.5, fig.height=3.5}
+plot_boruta(bb$bb) + theme(legend.position = "top", text = element_text(size = 8))
 ``` 
 
-## Correlations
+## Correlation Assessment
 
-Features with $|r|>0.5$.
+The all-relevant feature test does not highlight issues with collinearity, so we also examine our data for highly correlated features. The table below lists features with correlation coefficients $|r|\ge 0.7$, a heuristic threshold for excluding inputs from the model.
 
-```{r correlations, include = F}
+```{r correlations, echo=F}
 correlations <- abt %>% 
-  select(-c(date:county)) %>% 
-  select(where(is.numeric)) %>% 
+  select(ends_with("_sc")) %>% 
   cor()
 
 # See above for the highly-correlated vars we removed
 correlations %>% 
   as_tibble(rownames = "feature1") %>% 
   pivot_longer(-feature1, names_to = "feature2", values_to = "correlation") %>% 
-  filter(abs(correlation) > 0.5) %>% 
+  filter(abs(correlation) >= 0.7) %>% 
   filter(feature1 < feature2) %>% 
   arrange(-abs(correlation)) %>% 
-  knitr::kable()
+  mutate(correlation = sprintf("$%.03f$", correlation)) %>% 
+  mutate(across(feature1:feature2, ~ str_c("`", ., "`"))) %>% 
+  rename(`Input 1` = feature1, `Input 2` = feature2) %>% 
+  knitr::kable(align = c("l", "l", "r"))
 ```
 
-Discuss correlation results.
+Combining these findings with the permutation test results, we select `age_le_24_sc` in favor of `age_55_84_sc` and `pop_sc` in place of `density_sc`. The correlation matrix among the remaining predictors is shown below.
+
+```{r, include=F}
+abt <- abt %>% select(-c(age_55_84_sc, density_sc))
+```
 
 ```{r corrplot, echo = F}
 corrplot::corrplot(
@@ -228,29 +306,40 @@ corrplot::corrplot(
 
 # Model Fitting and Validation
 
-## Validation Strategy
+Our target is the the weekly growth in COVID-19 cases, i.e., $N(t)-N(t-7)$. We make predictions from two sets of inputs: the treatment (governmental policy) and "background" covariates (demography, testing rates, time, etc.) Because each state has slightly different nomenclature for their respective phased reopening plans, we use the following definitions:
 
-7-fold group cross validation grouped across counties.
-Evaluate on held out data _and_ assess model fit through AIC.
+ - Phase 1: Lower-Risk Workplaces. 
+   Retail may reopen with capacity restrictions, child care facilities, 
+  manufacturing and logistics, offices, limited hospitality and personal services,
+  restaurants (take-away only), and public places (parks, beaches, etc).
+ - Phase 2: Medium-Risk Workplaces.
+   Movie theaters, bars, dine-in restaurants, gyms, religious services, and 
+   more personal and hospitality services.
+ - Phase 3: High-Risk Areas.
+   Essentially move back to pre-quarantine society, although concerts, 
+   conventions, and sports arenas may have capacity limits.
 
-## Models and Fits
+We model the increase in COVID-19 infections using a negative-binomial regression to account for likely overdispersion, and we include interactions with time variables to account for the impact of policy on both the average change in COVID-19 cases and the rate of change with time. We fit a multilevel model to our data using the R package [glmmTMB][], including both state- and county-level random effects. Each level of the hierarchy is allowed both a varying intercept and a varying slope, multiplying the time since first reported infection.
 
-### Model 1
+[glmmTMB]: https://journal.r-project.org/archive/2017/RJ-2017-066/index.html
 
-```{r model1_no_random_slope, include=F}
-model_1 <- cache_operation(here("data/final/model_1.rds"), {
+
+```{r model_random_slopes, include=F}
+# plan(multiprocess)
+
+model <- cache_operation(here("data/final/model.rds"), {
   run_model_vfold(
-    formula = target ~ 1 + 
-      policy_recoded + 
-      time_days_since_inf1 + 
-      policy_recoded:time_days_since_inf1 + 
-      pop_density + 
-      acs_race_minority + 
-      acs_gender_female + 
-      acs_median_hh_inc_10k + 
-      acs_age_25_54 + acs_age_55_84 + acs_age_85_ge + 
-      cov_total_tests + cov_pos_tests_frac + 
-      (1 | state_code/county_fip),
+     formula = target ~ 
+       1 + time_sc + 
+       pop_sc + 
+       minority_sc + 
+       female_sc + 
+       income_sc + 
+       age_le_24_sc + age_25_54_sc + age_85_ge_sc + 
+       humid_sc + temp_sc + 
+       tests_total_sc + tests_pos_sc + 
+       policy + policy:time_phase_sc + 
+       (1 + time_sc | state_code/county_fip),
      data = abt, 
     seed = RANDOM_SEED, 
     folds = 7L
@@ -258,105 +347,324 @@ model_1 <- cache_operation(here("data/final/model_1.rds"), {
 })
 ```
 
-```{r}
-model_1 %>% 
-  extract_cv_glance()
+We validated our approach during development using five-fold group cross validation, with all data for a given county assigned to the same fold. For the final model fits presented here, we apply 7-fold group cross validation to the entire data set. At each step in the development we monitored key model metrics including AIC and $R^2$ to ensure that adding new predictors did not significantly harm out-of-sample predictions. We see, for example, that the inclusion of multilevel pooling harms out-of-sample $R^2$ slightly, but it strongly reduces AIC.
 
-model_1 %>% 
-  extract_cv_perf()
+The final-model cross-validation folds are stable with respect to model fit criteria; both AIC and the log-likelihood vary by $\sigma \lesssim 1\%$ among folds:
 
-model_1 %>% 
-  extract_cv_tidy() %>% 
-  print(n = Inf)
-
-model_1 %>% 
-  extract_cv_trajectories(.per_fold = 2) %>% 
-  plot_w_policy()
-
-model_1 %>% 
-  select(id, tidy) %>% 
-  unnest(tidy) %>% 
-  ggplot(aes(term, estimate, color = id)) + 
-  geom_point(position = position_dodge(width = 0.5)) + 
-  geom_errorbar(
-    aes(ymin = estimate - 2 * std.error, ymax = estimate + 2 * std.error), 
-    position = position_dodge(width = 0.5)
-  ) + 
-  ylim(-3, 3) + 
-  coord_flip() 
-
-sjPlot::plot_models(model_1$object, dot.size = 2)
-# This takes a _very_ long time
-sjPlot::plot_model(model_1$object[[1]], type = "resid")
+```{r, echo=F}
+model %>% 
+  extract_cv_glance() %>% 
+  filter(metric %in% c("AIC", "logLik")) %>% 
+  mutate(across(c(mean, sd), ~ round(., -3))) %>% 
+  transmute(
+    Metric = str_c("`", metric, "`"), 
+    Value = sprintf("$%s \\pm %s$", scales::comma(mean), scales::comma(sd))
+  ) %>% 
+  knitr::kable(align = c("l", "r"))
 ```
 
-### Model 2
+Out-of-sample predictive performance is more variable, but the model still produces an average out-of-sample $R^2 \sim 0.56$.
 
-```{r model2_random_slopes, include=F}
-model_2 <- cache_operation(here("data/final/model_2.rds"), {
-  run_model_vfold(
-    formula = target ~ 1 + 
-      policy_recoded + 
-      time_days_since_inf1 + 
-      policy_recoded:time_days_since_inf1 + 
-      pop_density + 
-      acs_race_minority + 
-      acs_gender_female + 
-      acs_median_hh_inc_10k + 
-      acs_age_25_54 + acs_age_55_84 + acs_age_85_ge + 
-      cov_total_tests + cov_pos_tests_frac + 
-      (1 + time_days_since_inf1 | state_code/county_fip),
-     data = abt, 
-    seed = RANDOM_SEED, 
-    folds = 7L
-  )
-})
+```{r, echo=F}
+model %>% 
+  extract_cv_perf() %>% 
+  filter(metric %in% c("rsq", "mae")) %>% 
+  mutate(across(mean_train:sd_test, ~ round(., 3))) %>% 
+  transmute(
+    Metric = case_when(metric == "rsq" ~ "$R^2$", TRUE ~ "MAE"),
+    `Training Perf.` = sprintf("$%.03f \\pm %.03f$", mean_train, sd_train),
+    `Testing Perf.` = sprintf("$%.03f \\pm %.03f$", mean_test, sd_test)
+  ) %>% 
+  knitr::kable(align = c("l", "r", "r"))
 ```
 
-```{r}
-extract_cv_glance(model_1, model_2)
-
-extract_cv_perf(model_1, model_2)
-
-model_2 %>% 
-  extract_cv_tidy() %>% 
-  print(n = Inf)
-
-model_2 %>% 
-  extract_cv_trajectories(.per_fold = 2) %>% 
-  plot_w_policy()
-
-model_2 %>% 
-  select(id, tidy) %>% 
-  unnest(tidy) %>% 
-  ggplot(aes(term, estimate, color = id)) + 
-  geom_point(position = position_dodge(width = 0.5)) + 
-  geom_errorbar(
-    aes(ymin = estimate - 2 * std.error, ymax = estimate + 2 * std.error), 
-    position = position_dodge(width = 0.5)
-  ) + 
-  ylim(-3, 3) + 
-  coord_flip()
-
-# These take between a long time and an eternity
-sjPlot::plot_models(model_2$object, dot.size = 2)
-sjPlot::plot_model(model_1$object[[1]], type = "resid")
-```
-
-
-### Model 3?
-
-```{r}
-
-```
-
-
-### Model 4?
-
-## Strengths and Weaknesses
-
-<!--- --->
+<!-- -->
 
 # Results and Discussion
 
+```{r, include=F}
+model_fe_plot <- cache_operation(here("data/final/model_fe_plot.rds"), {
+  sjPlot::plot_models(model$object, dot.size = 2)
+})
 
+# Extract the plots we need (1-SE bars) using fold 1
+model_re_plot <- cache_operation(here("data/final/model_re_plot.rds"), {
+  sjPlot::plot_model(
+    model$object[[1]], 
+    type = "re", 
+    dot.size = 2, 
+    ci.lvl = pnorm(1) - pnorm(-1)
+  )
+})
+
+# model_diag_plot <- cache_operation(here("data/final/model_diag_plot.rds"), {
+#   sjPlot::plot_model(model$object[[1]], type = "diag")
+# })
+
+# model_resid_plot <- cache_operation(here("data/final/model_resid_plot.rds"), {
+#   sjPlot::plot_models(model$object, dot.size = 2)
+# })
+
+# model_int_plot <- cache_operation(here("data/final/model_int_plot.rds"), {
+#   sjPlot::plot_model(model$object[[1]], type = "int", dot.size = 1.5)
+# })
+
+model_int2_plot <- cache_operation(here("data/final/model_int2_plot.rds"), {
+  sjPlot::plot_model(
+    model$object[[1]], 
+    type = "pred", 
+    terms = c("time_phase_sc", "policy")
+  )
+})
+```
+
+## Model Coefficients
+
+The fixed effects included in our model are also stable across folds, as shown below:
+
+```{r, echo=F, fig.height = 5, fig.width = 5.5}
+model_fe_plot + 
+  scale_color_brewer(guide = F, palette = "Dark2") + 
+  theme(legend.position = "none", aspect.ratio = 5 / 3, text = element_text(size = 8))
+```
+
+```{r, include=F}
+# Overdispersion
+rvals <- map_dbl(model$object, sigma)
+rvals_str <- sprintf("%.02f \\pm %.02f", mean(rvals), sd(rvals))
+```
+
+The overdispersion parameter $r$ is similarly stable; averaged across folds, it takes the value $r = `r rvals_str`$. We also provide the coefficients themselves in the table below, aggregated across folds:
+
+```{r, echo=F}
+model %>% 
+  extract_cv_tidy() %>% 
+  filter(effect == "fixed") %>% 
+  select(term, estimate, std.error) %>% 
+  transmute(
+    Term = sprintf("`%s`", str_to_lower(str_remove_all(term, "[\\(\\)]"))),
+    `Fitted Value` = sprintf("$%.03f(%.03f)$", estimate, std.error)
+  ) %>% 
+  arrange(Term) %>% 
+  knitr::kable(align = c("l", "r"))
+```
+
+Finally, we plot per-state random effects for one of our cross-validation folds, with $\pm 2 \sigma$ confidence intervals.
+
+```{r, echo=F, fig.height=7}
+model_re_plot[[2]]$data %>% 
+  as_tibble() %>% 
+  select(estimate:term) %>% 
+  mutate(se = (log(conf.high) - log(conf.low)) / 2) %>% 
+  mutate(
+    xl = exp(log(estimate) - 2 * se), 
+    xr = exp(log(estimate) + 2 * se)
+  ) %>% 
+  mutate(
+    facet = case_when(
+      facet == "state_code (Intercept)" ~ "Intercept",
+      TRUE ~ "Time (Days from First Reported Infection)"
+    ),
+    term = fct_reorder(term, estimate, mean),
+  ) %>% 
+  ggplot(aes(estimate, term)) + 
+  geom_vline(xintercept = 1, color = "#666677") + 
+  geom_errorbar(aes(xmin = xl, xmax = xr), width = 0) + 
+  geom_point() + 
+  facet_wrap(~ facet) + 
+  scale_x_log10(
+    limits = c(0.01, 100), 
+    breaks = c(0.01, 0.1, 1.0, 10, 100), 
+    labels = c("0.01", "0.1", "1", "10", "100")
+  ) + 
+  labs(x = NULL, y = NULL) + 
+  theme(aspect.ratio = 7 / 3, text = element_text(size = 8))
+```
+
+## Interactions
+
+We see from the above coefficient tables that policy effects contribute over time to the (local) progression or suppression of the COVID-19 epidemic in a complex way. Stay-at-home orders, for example, are associated with higher rates of infection on average, perhaps because they are enacted in response to quickly growing case rates, but their negative interaction with time shows they are simultaneously associated with a lessening of this rate over time. Note also that the coefficient `time_sc`, the time since the first measured infection in a county, is negative as well.
+
+```{r, echo=F, fig.width=6}
+model_int2_plot + theme(text = element_text(size = 8))
+```
+
+The nonlinear transformations of time variables further complicate real understanding of these results from tables, so we demonstrate the effect below by sampling from the fitted model coefficients for the intercept, policy, and time since a policy was enacted, holding other predictors at their average values (i.e., zero):
+
+$$
+\begin{aligned}
+y & \sim \mathrm{negbinom}(r, s) \\
+\log(s) &  = \beta_0 + \beta_\mathrm{policy} p + \beta_{\mathrm{policy}, t} p \cdot t,
+\end{aligned}
+$$
+Draws for the coefficients are taken from normal distributions parameterized by each coefficient's fitted parameters. We see that, as expected, stay-at-home orders are associated with decreasing case rates; no policy being issued is associated with a growth in cases. The effects of phased reopening are less clear, especially any difference in real effect among them.
+
+```{r sim1, echo=F, fig.width=5}
+# intercept + policy + policy_time
+
+# Extract coefficients
+avg_coefs <- tidy(model$object[[1]]) %>% 
+  filter(term %in% c(
+    "(Intercept)","policyphase_1", "policyphase_2", "policyphase_3", "policystay_home",
+    "policynone_issued:time_phase_sc", "policyphase_1:time_phase_sc", 
+    "policyphase_2:time_phase_sc", "policyphase_3:time_phase_sc", 
+    "policystay_home:time_phase_sc")
+  ) %>% 
+  select(term, estimate, std.error) %>% 
+  mutate(term = if_else(term == "(Intercept)", "intercept", term))
+
+avg_coefs <- map2(purrr::set_names(avg_coefs$term), 1:length(avg_coefs$term), ~ {
+  list("m" = avg_coefs[.y, ]$estimate, "s" = avg_coefs[.y, ]$std.error)
+})
+
+# Extract phase times from the ABT
+times <- abt %>% 
+  distinct(time_phase, time_phase_sc) %>% 
+  arrange(time_phase) %>% 
+  filter(time_phase <= 30)
+
+# Random draws
+samples <- map_dfr(1:50, ~ {
+  times %>% 
+    rowwise() %>% 
+    mutate(
+      i0 = rnorm(1, avg_coefs[["intercept"]]$m, avg_coefs[["intercept"]]$s),
+      ini = 0,
+      ish = rnorm(1, avg_coefs[["policystay_home"]]$m, avg_coefs[["policystay_home"]]$s),
+      ip1 = rnorm(1, avg_coefs[["policyphase_1"]]$m, avg_coefs[["policyphase_1"]]$s),
+      ip2 = rnorm(1, avg_coefs[["policyphase_2"]]$m, avg_coefs[["policyphase_2"]]$s),
+      ip3 = rnorm(1, avg_coefs[["policyphase_3"]]$m, avg_coefs[["policyphase_3"]]$s),
+      sni = rnorm(1, avg_coefs[["policynone_issued:time_phase_sc"]]$m, 
+              avg_coefs[["policynone_issued:time_phase_sc"]]$s),
+      ssh = rnorm(1, avg_coefs[["policystay_home:time_phase_sc"]]$m, 
+              avg_coefs[["policystay_home:time_phase_sc"]]$s),
+      sp1 = rnorm(1, avg_coefs[["policyphase_1:time_phase_sc"]]$m, 
+              avg_coefs[["policyphase_1:time_phase_sc"]]$s),
+      sp2 = rnorm(1, avg_coefs[["policyphase_2:time_phase_sc"]]$m, 
+              avg_coefs[["policyphase_2:time_phase_sc"]]$s),
+      sp3 = rnorm(1, avg_coefs[["policyphase_3:time_phase_sc"]]$m, 
+              avg_coefs[["policyphase_3:time_phase_sc"]]$s),
+      ) %>% 
+    mutate(
+      mu_ni = exp(i0 + ini + sni * time_phase_sc),
+      mu_sh = exp(i0 + ish + ssh * time_phase_sc),
+      mu_p1 = exp(i0 + ip1 + sp1 * time_phase_sc),
+      mu_p2 = exp(i0 + ip2 + sp2 * time_phase_sc),
+      mu_p3 = exp(i0 + ip3 + sp3 * time_phase_sc),
+    ) %>% 
+    mutate(
+      count_ni = rnbinom(1, size = sigma(model$object[[1]]), mu = mu_ni),
+      count_sh = rnbinom(1, size = sigma(model$object[[1]]), mu = mu_sh),
+      count_p1 = rnbinom(1, size = sigma(model$object[[1]]), mu = mu_p1),
+      count_p2 = rnbinom(1, size = sigma(model$object[[1]]), mu = mu_p2),
+      count_p3 = rnbinom(1, size = sigma(model$object[[1]]), mu = mu_p3),
+    ) %>% 
+    mutate(trial = .x, .before = everything()) %>% 
+    ungroup()
+})
+
+samples %>% 
+  select(trial, time_phase, starts_with("count")) %>% 
+  pivot_longer(
+    cols = -c(trial, time_phase), 
+    names_to = c("metric", "which"), 
+    names_sep = "_"
+  ) %>% 
+  group_by(time_phase, which) %>% 
+  median_hdci(value, .width = c(0.5, 0.89)) %>% 
+  mutate(which = case_when(
+    which == "p1" ~ "Phase 1",
+    which == "p2" ~ "Phase 2",
+    which == "p3" ~ "Phase 3",
+    which == "ni" ~ "None Issued",
+    which == "sh" ~ "Stay at Home",
+  )) %>% 
+  mutate(which = factor(which, levels = c(
+    "Phase 1", "Phase 2", "Phase 3", "Stay at Home", "None Issued")
+  )) %>% 
+  ggplot() + 
+  tidybayes::geom_lineribbon(aes(
+    time_phase, value, color = which, fill = which, 
+    group = factor(.width), alpha = factor(.width)
+  )) + 
+  facet_wrap(~ which) + 
+  scale_color_discrete(guide = F) + 
+  scale_fill_discrete(guide = F) + 
+  scale_alpha_manual(guide = F, values = c("0.5" = 0.6, "0.89" = 0.3)) + 
+  labs(x = "Time in phase (days)", y = "Growth in infection count") + 
+  theme(text = element_text(size = 8))
+```
+
+Or, if we applied the same to a county with a higher average number of infections (note the differing scales on the $y$-axis):
+
+```{r sim2, echo=F, fig.width=5}
+# Random draws
+samples <- map_dfr(1:50, ~ {
+  times %>% 
+    rowwise() %>% 
+    mutate(
+      i0 = 2 + rnorm(1, avg_coefs[["intercept"]]$m, avg_coefs[["intercept"]]$s),
+      ini = 0,
+      ish = rnorm(1, avg_coefs[["policystay_home"]]$m, avg_coefs[["policystay_home"]]$s),
+      ip1 = rnorm(1, avg_coefs[["policyphase_1"]]$m, avg_coefs[["policyphase_1"]]$s),
+      ip2 = rnorm(1, avg_coefs[["policyphase_2"]]$m, avg_coefs[["policyphase_2"]]$s),
+      ip3 = rnorm(1, avg_coefs[["policyphase_3"]]$m, avg_coefs[["policyphase_3"]]$s),
+      sni = rnorm(1, avg_coefs[["policynone_issued:time_phase_sc"]]$m, 
+              avg_coefs[["policynone_issued:time_phase_sc"]]$s),
+      ssh = rnorm(1, avg_coefs[["policystay_home:time_phase_sc"]]$m, 
+              avg_coefs[["policystay_home:time_phase_sc"]]$s),
+      sp1 = rnorm(1, avg_coefs[["policyphase_1:time_phase_sc"]]$m, 
+              avg_coefs[["policyphase_1:time_phase_sc"]]$s),
+      sp2 = rnorm(1, avg_coefs[["policyphase_2:time_phase_sc"]]$m, 
+              avg_coefs[["policyphase_2:time_phase_sc"]]$s),
+      sp3 = rnorm(1, avg_coefs[["policyphase_3:time_phase_sc"]]$m, 
+              avg_coefs[["policyphase_3:time_phase_sc"]]$s),
+      ) %>% 
+    mutate(
+      mu_ni = exp(i0 + ini + sni * time_phase_sc),
+      mu_sh = exp(i0 + ish + ssh * time_phase_sc),
+      mu_p1 = exp(i0 + ip1 + sp1 * time_phase_sc),
+      mu_p2 = exp(i0 + ip2 + sp2 * time_phase_sc),
+      mu_p3 = exp(i0 + ip3 + sp3 * time_phase_sc),
+    ) %>% 
+    mutate(
+      count_ni = rnbinom(1, size = sigma(model$object[[1]]), mu = mu_ni),
+      count_sh = rnbinom(1, size = sigma(model$object[[1]]), mu = mu_sh),
+      count_p1 = rnbinom(1, size = sigma(model$object[[1]]), mu = mu_p1),
+      count_p2 = rnbinom(1, size = sigma(model$object[[1]]), mu = mu_p2),
+      count_p3 = rnbinom(1, size = sigma(model$object[[1]]), mu = mu_p3),
+    ) %>% 
+    mutate(trial = .x, .before = everything()) %>% 
+    ungroup()
+})
+
+samples %>% 
+  select(trial, time_phase, starts_with("count")) %>% 
+  pivot_longer(
+    cols = -c(trial, time_phase), 
+    names_to = c("metric", "which"), 
+    names_sep = "_"
+  ) %>% 
+  group_by(time_phase, which) %>% 
+  median_hdci(value, .width = c(0.5, 0.89)) %>% 
+  mutate(which = case_when(
+    which == "p1" ~ "Phase 1",
+    which == "p2" ~ "Phase 2",
+    which == "p3" ~ "Phase 3",
+    which == "ni" ~ "None Issued",
+    which == "sh" ~ "Stay at Home",
+  )) %>% 
+  mutate(which = factor(which, levels = c(
+    "Phase 1", "Phase 2", "Phase 3", "Stay at Home", "None Issued")
+  )) %>% 
+  ggplot() + 
+  tidybayes::geom_lineribbon(aes(
+    time_phase, value, color = which, fill = which, 
+    group = factor(.width), alpha = factor(.width)
+  )) + 
+  facet_wrap(~ which, scales = "free_y") + 
+  scale_color_discrete(guide = F) + 
+  scale_fill_discrete(guide = F) + 
+  scale_alpha_manual(guide = F, values = c("0.5" = 0.6, "0.89" = 0.3)) + 
+  labs(x = "Time in phase (days)", y = "Growth in infection count")
+```

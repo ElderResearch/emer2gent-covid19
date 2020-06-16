@@ -1,0 +1,51 @@
+\documentclass[10pt]{article}
+
+\usepackage{amsmath}
+
+% Tables
+\usepackage{booktabs}
+\usepackage{longtable}
+
+\usepackage[top=1.3in,bottom=1.3in,left=1.58in,right=1.58in]{geometry}
+
+\usepackage{graphicx}
+
+\usepackage{parskip}
+\usepackage[bitstream-charter]{mathdesign}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,allcolors=black,urlcolor=blue}
+\usepackage{microtype}
+
+\renewcommand{\baselinestretch}{1.2}
+
+% https://tex.stackexchange.com/a/258486
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+
+\begin{document}
+
+$if(justify)$
+$else$
+\raggedright
+$endif$
+
+% TITLE
+$if(title)$
+{\LARGE\bfseries $title$}
+$endif$
+
+$if(author)$
+$for(author)$$author$$sep$, $endfor$
+$if(date)$\\ $endif$
+$endif$
+$if(date)$
+$date$
+$endif$
+
+$body$
+
+$if(bibliography)$
+\bibliography{$for(bibliography)$$bibliography$$sep$,$endfor$}
+$endif$
+
+\end{document}

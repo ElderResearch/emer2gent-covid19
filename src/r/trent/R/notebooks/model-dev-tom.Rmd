@@ -30,7 +30,7 @@ suppressPackageStartupMessages({
   library(glue)
 })
 
-plan(multiprocess)
+# plan(multiprocess)
 ```
 
 
@@ -131,6 +131,8 @@ keep_columns <- c(
   "state_code", "county_fip", "state", "county", 
   "target", 
   "policy_recoded" = "policy",
+  "policy_schools" = "educational_fac",
+  "policy_travel" = "travel_limit",
   "time_dow", "time_wk_yr", "time_days_since_inf1",
   "tmpf_mean", "relh_mean", 
   "pop_density", "acs_pop_total",
@@ -152,7 +154,22 @@ keep_columns <- c(
 # Strings to factors in certain cases
 abt_sub <- abt_v2 %>% 
   select(all_of(keep_columns)) %>% 
+  mutate(
+    policy_schools = as.character(policy_schools),
+    policy_travel = factor(case_when(
+      policy_travel == "None Issued" ~ "none_issued", 
+      policy_travel == "0" ~ "coded_0",
+      policy_travel == "1" ~ "coded_1",
+    ), levels = c(
+      "none_issued",
+      "coded_0",
+      "coded_1"
+    ))
+  ) %>% 
   mutate(across(c(where(is.character), -c(date:county)), factor))
+
+levels(abt_sub$policy_schools)
+levels(abt_sub$policy_travel)
 
 dim(abt_sub)
 
@@ -247,11 +264,12 @@ Boruta runs permutation tests against the input features using Random
 Forests to identify all _relevant_ features.
 
 ```{r}
+FORCE_MODEL_RUN <- 1
 bb <- cache_operation(here("data/ts_boruta_sample.rds"), {
   set.seed(RANDOM_SEED)
-  bt_sub_std %>% 
+  abt_sub_std %>% 
     distinct(county_fip) %>% 
-    sample_n(275) %>% 
+    sample_n(400) %>% 
     semi_join(abt_sub_std, ., by = "county_fip") %>% 
     select(-c(date:county)) %>% 
     Boruta::Boruta(target ~ ., data = ., maxRuns = 20, doTrace = 2)
@@ -594,16 +612,30 @@ dim(sample2_abt)
 summary(sample2_abt)
 ```
 
+Add 'time in phase':
+
+```{r}
+sample2_abt <- sample2_abt %>% 
+  group_by(county_fip, policy_recoded) %>% 
+  arrange(county_fip, policy_recoded, date) %>% 
+  mutate(time_phase = as.integer(date - min(date))) %>% 
+  ungroup()
+```
+
+
 Check distributions:
 
  - Fix pop. and pop. density skew with a log
  - Fix all ACS with skew using log
  - Fix COVID-19 testing using log(1+x)
+ - Quantile normalize time
 
 ```{r}
 sample2_abt %>%
-  mutate(across(c(pop_density, starts_with("acs")), log)) %>% 
-  mutate(across(starts_with("cov"), log1p)) %>% 
+  mutate(across(c(pop_density, starts_with("acs")), log)) %>%
+  mutate(across(starts_with("cov"), log1p)) %>%
+  mutate(time_days_since_inf1 = rank_norm(time_days_since_inf1)) %>%
+  mutate(time_phase = rank_norm(time_phase)) %>%
   select(where(is.numeric), -county_fip) %>% 
   pivot_longer(everything()) %>% 
   ggplot(aes(value)) + 
@@ -617,38 +649,100 @@ sample2_abt %>%
 
 ```{r}
 sample2_abt <- sample2_abt %>% 
-  mutate(
-    across(c(pop_density, starts_with("acs")), log),
-    across(starts_with("cov"), log1p)
+  # Better names
+  rename(
+    time = time_days_since_inf1, 
+    temp = tmpf_mean, 
+    humid = relh_mean, 
+    density = pop_density, 
+    pop = acs_pop_total,
+    minority = acs_race_minority,
+    female = acs_gender_female,
+    income = acs_median_hh_inc_10k,
+    tests_total = cov_total_tests,
+    tests_pos = cov_pos_tests_frac,
+    econ_labor_force = labor_force,
+    econ_unempl = unemployed
   ) %>% 
+  rename_with(~ str_remove(., "^acs_"), starts_with("acs_age")) %>% 
+  # Drop unwanted
   select(-c(
-    time_wk_yr, 
-    acs_age_25_34:acs_age_75_84,
-    mobility_grocery_and_pharmacy, mobility_transit_stations, mobility_residential
+    # Correlated with time
+    time_wk_yr,
+    # New bins derived from these
+    age_25_34, age_35_44, age_45_54,
+    age_55_64, age_65_74, age_75_84
   )) %>% 
-  # circle-encode day of week
+  # Circle encode time
   mutate(
     time_dow_x = cos(2 * pi * (as.integer(time_dow) - 1) / 7),
     time_dow_y = sin(2 * pi * (as.integer(time_dow) - 1) / 7),
     .keep = "unused",
     .after = "time_dow"
   ) %>% 
-  mutate(time_log = log1p(time_days_since_inf1)) %>% 
-  # standardize
-  mutate(across(time_dow_x:time_log, ~ (. - mean(.)) / (2 * sd(.))))
-
-dim(sample2_abt)
-summary(sample2_abt)
+  # Make predictors normal, then standardize
+  mutate(
+    across(c(starts_with("time")), rank_norm, .names = "{col}_sc"),
+    across(
+      c(starts_with(c("age", "econ")), density, female, income, pop, minority),
+      log, 
+      .names = "{col}_sc"
+    ),
+    across(starts_with("tests"), log1p, .names = "{col}_sc"),
+    across(c(humid, temp, starts_with("mobility")), ~ ., .names = "{col}_sc")
+  ) %>%
+  mutate(across(ends_with("_sc"), standardize))
 ```
 
 ```{r}
 sample2_abt %>% 
-  select(where(is.numeric), -county_fip) %>% 
+  select(ends_with("_sc")) %>% 
   pivot_longer(everything()) %>% 
   ggplot(aes(value)) + 
   geom_histogram(bins = 50) + 
   facet_wrap(~ name, scales = "free")
 ```
+
+Recheck correlations on proper scale:
+
+```{r}
+sample2_abt %>% 
+  select(ends_with("_sc")) %>% 
+  cor() %>% 
+  as_tibble(rownames = "feature1") %>% 
+  pivot_longer(-feature1, names_to = "feature2", values_to = "correlation") %>% 
+  filter(abs(correlation) > 0.4) %>%
+  filter(feature1 < feature2) %>% 
+  arrange(-abs(correlation)) %>% 
+  print(n = Inf)
+```
+
+```{r}
+sample2_abt <- sample2_abt %>% 
+  select(-c(
+    mobility_grocery_and_pharmacy_sc, mobility_residential_sc, 
+    mobility_transit_stations_sc
+  ))
+```
+
+```{r}
+folds <- group_vfold_cv(sample2_abt, group = county_fip, v = 5)
+
+folds <- folds %>% 
+  rowwise() %>% 
+  transmute(id, test = list(assessment(splits))) %>% 
+  ungroup()
+
+f2 <- folds %>% 
+  unnest(test) %>% 
+  select(id, county_fip)
+
+f3 <- f2 %>% distinct(id, county_fip)
+
+f3 %>% count(county_fip) %>% arrange(-n)
+
+```
+
 
 ---
 
@@ -666,8 +760,8 @@ We also start from policy and add features that (1) help prediction and
 This is the baseline; it won't be good.
 
 ```{r}
-s2_pol_bl <- cache_operation(
-  here("data/ts_model_s2_pol_bl.rds"), {
+s2_baseline <- cache_operation(
+  here("data/s2_baseline_200615.rds"), {
     run_model_vfold(
      formula = target ~ 1 + policy_recoded + (1 | state_code/county_fip),
      data = sample2_abt, 
@@ -679,38 +773,178 @@ s2_pol_bl <- cache_operation(
 ### Stats tables
 
 ```{r}
-s2_pol_bl %>% extract_cv_glance()
-s2_pol_bl %>% extract_cv_perf()
-s2_pol_bl %>% extract_cv_tidy()
+s2_baseline %>% extract_cv_glance()
+s2_baseline %>% extract_cv_perf()
+s2_baseline %>% extract_cv_tidy()
 ```
 
 ### Fit charts
 
 ```{r}
-plot_models(s2_pol_bl$object)
-plot_model(s2_pol_bl$object[[1]], type = "resid")
-plot_model(s2_pol_bl$object[[1]], type = "diag")
+plot_models(s2_baseline$object, dot.size = 2)
+# plot_model(s2_baseline$object[[1]], type = "resid")
+# plot_model(s2_baseline$object[[1]], type = "diag")
 ```
 
 ```{r}
-plot_model(s2_pol_bl$object[[1]], type = "re")
+# plot_model(s2_baseline$object[[1]], type = "re")
 ```
 
 ### Trajectory plots
 
-Sample a few counties, two from each fold, and plot predictions.
-Note that the fits are OK, but the directionality makes no sense because
-we are missing many covariates (the above residual plot makes sens, though).
+```{r}
+# s2_baseline %>% 
+#   extract_cv_trajectories(.per_fold = 2, seed = RANDOM_SEED) %>% 
+#   plot_w_policy()
+```
+
+---
+
+## 1. Add time to baseline
 
 ```{r}
-s2_pol_bl %>% 
-  extract_cv_trajectories(.per_fold = 2, seed = RANDOM_SEED) %>% 
+FORCE_MODEL_RUN <- 1
+s2_baseline_time <- cache_operation(
+  here("data/s2_baseline_time_200615.rds"), {
+    run_model_vfold(
+     formula = target ~ 1 + policy_recoded + time_sc + (1 | state_code/county_fip),
+     data = sample2_abt, 
+     seed = RANDOM_SEED
+    )
+})
+```
+
+### Stats tables
+
+```{r}
+extract_cv_glance(s2_baseline, s2_baseline_time)
+extract_cv_perf(s2_baseline, s2_baseline_time)
+extract_cv_tidy(s2_baseline, s2_baseline_time)
+```
+
+### Fit charts
+
+```{r}
+plot_models(s2_baseline_time$object, dot.size = 2)
+# plot_model(s2_baseline_time$object[[1]], type = "resid")
+# plot_model(s2_baseline_time$object[[1]], type = "diag")
+```
+
+```{r}
+# plot_model(s2_baseline_time$object[[1]], type = "re")
+```
+
+### Trajectory plots
+
+```{r}
+# s2_baseline %>% 
+#   extract_cv_trajectories(.per_fold = 2, seed = RANDOM_SEED) %>% 
+#   plot_w_policy()
+```
+
+---
+
+## 2. Add time as a random slope
+
+```{r}
+FORCE_MODEL_RUN <- 1
+s2_baseline_time_re <- cache_operation(
+  here("data/s2_baseline_time_re_200615.rds"), {
+    run_model_vfold(
+     formula = target ~ 
+       1 + time_sc + policy_recoded + 
+       (1 + time_sc | state_code/county_fip),
+     data = sample2_abt, 
+     seed = RANDOM_SEED
+    )
+})
+```
+
+### Stats tables
+
+Better fit without harming predictions _too_ much.
+
+```{r}
+extract_cv_glance(s2_baseline, s2_baseline_time, s2_baseline_time_re)
+extract_cv_perf(s2_baseline, s2_baseline_time, s2_baseline_time_re)
+extract_cv_tidy(s2_baseline, s2_baseline_time, s2_baseline_time_re)
+```
+
+### Fit charts
+
+```{r}
+plot_models(s2_baseline_time_re$object, dot.size = 2)
+plot_model(s2_baseline_time_re$object[[1]], type = "resid")
+# plot_model(s2_baseline_time$object[[1]], type = "diag")
+```
+
+```{r}
+# plot_model(s2_baseline_time_re$object[[1]], type = "re")
+```
+
+### Trajectory plots
+
+```{r}
+s2_baseline_time_re %>%
+  extract_cv_trajectories(.per_fold = 2, seed = RANDOM_SEED) %>%
+  plot_w_policy()
+```
+
+--
+
+## 3. Add interaction with time in policy
+
+```{r}
+FORCE_MODEL_RUN <- 1
+s2_time_re_int <- cache_operation(
+  here("data/s2_baseline_time_re_int_200615.rds"), {
+    run_model_vfold(
+     formula = target ~ 
+       1 + time_sc + 
+       policy_recoded + policy_recoded:time_phase_sc + 
+       (1 + time_sc | state_code/county_fip),
+     data = sample2_abt, 
+     seed = RANDOM_SEED
+    )
+})
+```
+
+### Stats tables
+
+Another big drop.
+
+```{r}
+extract_cv_glance(s2_baseline_time_re, s2_time_re_int)
+extract_cv_perf(s2_baseline_time_re, s2_time_re_int)
+
+extract_cv_tidy(s2_baseline_time_re, s2_time_re_int) %>% 
+  arrange(term, model) %>% 
+  print(n = Inf)
+```
+
+### Fit charts
+
+```{r}
+plot_models(s2_time_re_int$object, dot.size = 2)
+plot_model(s2_time_re_int$object[[1]], type = "resid")
+# plot_model(s2_time_re_int$object[[1]], type = "diag")
+```
+
+```{r}
+# plot_model(s2_time_re_int$object[[1]], type = "re")
+```
+
+### Trajectory plots
+
+```{r}
+s2_time_re_int %>%
+  extract_cv_trajectories(.per_fold = 2, seed = RANDOM_SEED) %>%
   plot_w_policy()
 ```
 
 ---
 
-## 1. Introduce key covariates
+## 4. Introduce key covariates
 
 New covariates:
 
@@ -721,21 +955,22 @@ New covariates:
  - COVID-19 testing
 
 ```{r}
-FORCE_MODEL_RUN <- 0
-s2_pol_cov <- cache_operation(
-  here("data/ts_model_s2_pol_kcov.rds"), {
+FORCE_MODEL_RUN <- 1
+s2_time_re_int_main <- cache_operation(
+  here("data/s2_time_re_int_main_200615.rds"), {
     run_model_vfold(
-     formula = target ~ 1 + 
-       policy_recoded + 
-       time_days_since_inf1 + 
-       time_dow_x + time_dow_y + 
-       acs_pop_total + pop_density + 
-       acs_race_minority + 
-       acs_gender_female + 
-       acs_median_hh_inc_10k + 
-       acs_age_le_24 + acs_age_25_54 + acs_age_55_84 + acs_age_85_ge + 
-       cov_total_tests + cov_pos_tests_frac + 
-       (1 | state_code/county_fip),
+     formula = target ~ 
+       1 + time_sc + 
+       time_dow_x_sc + time_dow_y_sc + 
+       density_sc + 
+       minority_sc + 
+       female_sc + 
+       income_sc + 
+       age_25_54_sc + age_55_84_sc + age_85_ge_sc + 
+       humid_sc + temp_sc + 
+       tests_total_sc + tests_pos_sc + 
+       policy_recoded + policy_recoded:time_phase_sc + 
+       (1 + time_sc | state_code/county_fip),
      data = sample2_abt
     )
   })
@@ -743,13 +978,13 @@ s2_pol_cov <- cache_operation(
 
 ### Stats tables
 
-This helps tremendously, with $R^2 = 0.65(15)$ on held out data.
+This helps tremendously, with $R^2 = 0.6(3)$ on held out data.
 
 ```{r}
-extract_cv_glance(s2_pol_bl, s2_pol_cov)
-extract_cv_perf(s2_pol_bl, s2_pol_cov)
+extract_cv_glance(s2_time_re_int, s2_time_re_int_main)
+extract_cv_perf(s2_time_re_int, s2_time_re_int_main)
 
-s2_pol_cov %>% extract_cv_tidy()
+s2_time_re_int_main %>% extract_cv_tidy()
 ```
 
 ### Fit charts
@@ -760,9 +995,10 @@ s2_pol_cov %>% extract_cv_tidy()
  - Day of week doesn't help
 
 ```{r}
-plot_models(s2_pol_cov$object, dot.size = 2)
-plot_model(s2_pol_cov$object[[1]], type = "resid")
-plot_model(s2_pol_cov$object[[1]], type = "diag")
+plot_models(s2_time_re_int_main$object, dot.size = 2)
+plot_model(s2_time_re_int_main$object[[1]], type = "int")
+plot_model(s2_time_re_int_main$object[[1]], type = "resid")
+plot_model(s2_time_re_int_main$object[[1]], type = "diag")
 ```
 
 ```{r}
@@ -779,25 +1015,111 @@ s2_pol_cov %>%
 
 ---
 
-## 2. Policy with economics
-
-**NB:** This was without pop_density.
+## 4b. Add other policies
 
 ```{r}
-s2_pol_cov1_econ <- here("data/ts_model_s2_pol_cov_econ.rds") %>%
+FORCE_MODEL_RUN <- 1
+s2_time_re_int_main_b <- cache_operation(
+  here("data/s2_time_re_int_main_b_200615.rds"), {
+    run_model_vfold(
+     formula = target ~ 
+       1 + time_sc + 
+       pop_sc + 
+       minority_sc + 
+       female_sc + 
+       income_sc + 
+       age_le_24 + age_25_54_sc + age_85_ge_sc + 
+       humid_sc + temp_sc + 
+       tests_total_sc + tests_pos_sc + 
+       policy_schools + policy_travel + 
+       policy_recoded + policy_recoded:time_phase_sc + 
+       (1 + time_sc | state_code/county_fip),
+     data = sample2_abt
+    )
+  })
+```
+
+
+
+---
+
+## 5. Remove the random slopes
+
+
+```{r}
+FORCE_MODEL_RUN <- 0
+s2_time_re_main <- cache_operation(
+  here("data/s2_time_re_main_200615.rds"), {
+    run_model_vfold(
+     formula = target ~ 
+       1 + time_sc + 
+       time_dow_x_sc + time_dow_y_sc + 
+       density_sc + 
+       minority_sc + 
+       female_sc + 
+       income_sc + 
+       age_25_54_sc + age_55_84_sc + age_85_ge_sc + 
+       humid_sc + temp_sc + 
+       tests_total_sc + tests_pos_sc + 
+       policy_recoded + policy_recoded:time_phase_sc + 
+       (1 | state_code/county_fip),
+     data = sample2_abt
+    )
+  })
+```
+
+### Stats tables
+
+This helps tremendously, with $R^2 = 0.6(3)$ on held out data.
+
+```{r}
+extract_cv_glance(s2_time_re_main, s2_time_re_int_main)
+extract_cv_perf(s2_time_re_main, s2_time_re_int_main)
+
+s2_time_re_main %>% extract_cv_tidy()
+```
+
+### Fit charts
+
+```{r}
+plot_models(s2_time_re_main$object, dot.size = 2)
+plot_model(s2_time_re_main$object[[1]], type = "resid")
+plot_model(s2_time_re_main$object[[1]], type = "diag")
+```
+
+```{r}
+plot_model(s2_time_re_main$object[[1]], type = "re")
+```
+
+### Trajectory plots
+
+```{r}
+s2_time_re_main %>% 
+  extract_cv_trajectories(.per_fold = 2, seed = RANDOM_SEED) %>% 
+  plot_w_policy()
+```
+
+---
+
+## 6. Policy with economics
+
+```{r}
+s2_time_re_int_econ <- here("data/s2_time_re_int_econ_200615.rds") %>%
   cache_operation({
     run_model_vfold(
-     formula = target ~ 1 + 
-       policy_recoded + 
-       time_days_since_inf1 + 
-       acs_pop_total + 
-       acs_race_minority + 
-       acs_gender_female + 
-       acs_median_hh_inc_10k + 
-       acs_age_25_54 + acs_age_55_84 + acs_age_85_ge + 
-       cov_total_tests + cov_pos_tests_frac + 
-       labor_force + unemployed + 
-       (1 | state_code/county_fip),
+     formula = target ~ 
+       1 + time_sc + 
+       time_dow_x_sc + time_dow_y_sc + 
+       density_sc + 
+       minority_sc + 
+       female_sc + 
+       income_sc + 
+       age_25_54_sc + age_55_84_sc + age_85_ge_sc + 
+       humid_sc + temp_sc + 
+       tests_total_sc + tests_pos_sc + 
+       econ_labor_force_sc + econ_unempl_sc + 
+       policy_recoded + policy_recoded:time_phase_sc + 
+       (1 + time_sc | state_code/county_fip),
      data = sample2_abt
     )
   })
@@ -843,7 +1165,7 @@ s2_pol_cov1_econ %>%
 
 ---
 
-## 3. Policy with mobility
+## 7. Policy with mobility
 
 ```{r}
 s2_pol_cov1_econ_mob <- here("data/ts_model_s2_pol_cov_econ_mob.rds") %>%
@@ -908,7 +1230,13 @@ s2_pol_cov1_econ_mob %>%
 
 ---
 
-## 4. Policy-time interactions
+## 8. Other policies
+
+
+
+---
+
+## 9. Old
 
 Allow policy to interact with time through a term
 

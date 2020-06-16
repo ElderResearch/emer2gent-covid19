@@ -214,18 +214,59 @@ plot_w_policy <- function(data) {
 #' Nicely plot a Boruta object
 plot_boruta <- function(boruta_obj) {
   decisions <- enframe(boruta_obj$finalDecision, "feature", "decision")
+  decisions$decision <- as.character(decisions$decision)
   
   boruta_obj$ImpHistory %>% 
     as_tibble(rownames = "iteration") %>% 
     pivot_longer(-iteration, names_to = "feature", values_to = "importance") %>% 
     filter(importance > -Inf) %>% 
     left_join(decisions, by = "feature") %>% 
+    mutate(
+      decision = factor(
+        replace_na(decision, "Permuted"), 
+        levels = c("Confirmed", "Tentative", "Rejected", "Permuted")
+    )) %>% 
     mutate(feature = fct_rev(fct_reorder(factor(feature), importance, median))) %>% 
     ggplot(aes(feature, importance, fill = decision)) + 
     geom_boxplot() + 
     coord_flip() + 
-    scale_fill_discrete(na.translate = F)
+    labs(y = "Importance", x = NULL) + 
+    scale_fill_manual(
+      name = "Outcome", 
+      values = c(
+        "Confirmed" = "#00cc66", 
+        "Tentative" = "#f0e68c", 
+        "Permuted" = "#99aaaa",
+        "Rejected" = "#cc0066"
+      )
+    )
 }
+
+#' Bind all coefficients together in one table at the state level
+get_state_coefs <- function(model, re_plot) {
+  fe_coef <- broom.mixed::tidy(model)
+  re_coef <- as_tibble(re_plot[[2]]$data)
+}
+
+#' Bind all coefficients together in one table at the county level
+get_county_coefs <- function(model, re_plot) {
+  fe_coef <- broom.mixed::tidy(model)
+  re_coef <- as_tibble(re_plot[[1]]$data)
+}
+
+#' Plot the average effect over time for one or more counties
+
+#' Plot the average effect over time for one or more states
+
+#' Plot the average interaction between policy and time
+
+#' Plot the average county profile
+#' Average length, average time of policy, etc.
+#' Most coefficients are zero, except the dynamic ones
+
+#' Plot the average county profile without any policy
+
+#' Plot the average county profile with counterfactuals
 
 
 # ABT preparation -----------------------------------------------------------------
@@ -304,7 +345,47 @@ abt_fe_add_coarse_age_bins <- function(abt) {
 }
 
 
+#' Add a "time in phase" column
+abt_fe_add_time_phase <- function(abt) {
+  out <- abt %>% 
+    group_by(county_fip, policy) %>% 
+    mutate(time_phase = as.integer(date - min(date))) %>% 
+    ungroup()
+  
+  assert_that(all(!is.na(out$time_phase)))
+  assert_that(min(out$time_phase) == 0)
+  
+  out
+}
+
+
+#' Add circle-encoded DOW
+abt_fe_add_circle_enc_dow <- function(abt) {
+  out <- abt %>% 
+    mutate(
+      time_dow_x = cos(2 * pi * (as.integer(time_dow) - 1) / 7),
+      time_dow_y = sin(2 * pi * (as.integer(time_dow) - 1) / 7),
+      .keep = "unused",
+      .after = "time_dow"
+    )
+  
+  assert_that(all(!is.na(c(out$time_dow_x, out$time_dow_y))))
+  assert_that(all(abs(out$time_dow_x) <= 1))
+  assert_that(all(abs(out$time_dow_y) <= 1))
+  
+  out
+}
+
+
 #' Standardize a feature @ 2-sigma
 standardize <- function(values) {
   (values - mean(values)) / (2 * sd(values))
+}
+
+
+#' Rank normalization
+rank_norm <- function(values) {
+  # -1, +1 keeps qnorm from getting a value of 1
+  ranks <- rank(values, ties.method = "average") - 1
+  qnorm(ranks / max(ranks + 1))
 }
