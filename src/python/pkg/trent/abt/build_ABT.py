@@ -7,13 +7,15 @@ from trent.data import DATA_DIR
 
 """ Overview 
 
-In this script we combine the following tables to construct a full ABT; 
-- CDC intermediate data ( county level ) 
-- Policy intermediate data ( state level with county-level cases ) 
-- US mobility data ( county level) 
-- Weather data ( county level )
-- Department of Labour Unemployment data ( county level ) 
-- ACS intermediate data ( county level ) 
+In this script we combine the following tables to construct a full ABT:
+- CDC intermediate data (county level) 
+- Policy intermediate data ( state level with county-level cases) 
+- US mobility data (county level) 
+- Weather data (county level)
+- Department of Labour Unemployment data (county level) 
+- ACS intermediate data (county level) 
+- COVID tracking data (state level)
+- US Land Area Data (county level) -> used to derive population density 
 
 Note: 
 
