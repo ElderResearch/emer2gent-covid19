@@ -139,15 +139,6 @@ group_by(d, state, county) %>%
   mutate(percent = scales::percent(count/sum(count)))
 ```
 
-NB: We have a county with a death but no cases:
-
-```{r}
-d %>% 
-  group_by(state, county) %>% 
-  summarize(across(c(confirmed, deaths), max), .groups = "drop") %>% 
-  filter(confirmed == 0, deaths > 0)
-```
-
 ---
 
 # Processing
@@ -444,7 +435,7 @@ In addition to the imputation methods listed above these values will also be
 scaled by a factor of 100. 
 
 ```{r}
-dd <- mutate(dd, across(mobility_cols, ~ .x / 100))
+dd <- mutate(dd, across(all_of(mobility_cols), ~ .x / 100))
 ```
 
 ---
