@@ -1,7 +1,7 @@
 ---
 title:  "Emergent Analysis, Phased Reopening"
 author: "Elder Research, Inc."
-date:   "15 June, 2020"
+date:   "Last Run: `r Sys.Date()`"
 output: 
   pdf_document:
     template: template.tex
@@ -50,6 +50,8 @@ FORCE_MODEL_RUN <- FALSE
 
 source(here("R/helpers.R"))
 ```
+
+**NOTE: Report text has not been updated to match calculations.**
 
 <!--- --->
 
@@ -124,7 +126,6 @@ abt <- vroom::vroom(here("data/abt_prepped.csv"))
 abt <- abt_fe_time_days_since_inf1(abt)
 abt <- abt_fe_add_time_phase(abt)
 abt <- abt_fe_acs_median_hh_inc_10k(abt)
-abt <- abt_fe_add_cov_pos_tests_frac(abt)
 abt <- abt_fe_add_coarse_age_bins(abt)
 
 abt <- abt %>% 
@@ -137,9 +138,6 @@ abt <- abt %>%
     # time
     time = time_days_since_inf1, 
     time_phase,
-    # weather
-    temp = tmpf_mean, 
-    humid = relh_mean, 
     # demography
     density = pop_density, 
     pop = acs_pop_total,
@@ -147,10 +145,8 @@ abt <- abt %>%
     female = acs_gender_female,
     income = acs_median_hh_inc_10k,
     starts_with("acs_age"),
-    tests_total = cov_total_tests,
-    tests_pos = cov_pos_tests_frac,
-    # econ_labor_force = labor_force,
-    # econ_unempl = unemployed
+    cov_tests_tot_week,
+    cov_tests_pos_frac_week
   ) %>% 
   rename_with(
     ~ str_remove(., "^acs_"), 
@@ -199,16 +195,11 @@ abt %>%
 abt <- abt %>% 
   mutate(
     # Copy every input variable to a "scaled" copy
-    across(c(where(is.numeric), -target, -county_fip), 
-           ~ ., .names = "{col}_sc"
-    ),
-    # Log transform select columns
-    across(matches("tests_.*_sc"), log1p),
-    across(c(
-      matches("age_.*_sc"), 
-      matches("econ_.*_sc"), 
-      density_sc, female_sc, income_sc, pop_sc, minority_sc
-    ), log),
+    across(c(where(is.numeric), -target, -county_fip), ~ ., .names = "{col}_sc"),
+    # Transform select columns
+    across(c(matches("age.*_sc"), female_sc, income_sc, minority_sc), log),
+    across(c(density_sc, pop_sc), log),
+    cov_tests_tot_week_sc = sqrt(cov_tests_tot_week_sc),
     # Rank transform times
     across(c(matches("time.*_sc")), rank_norm)
   )
@@ -279,7 +270,7 @@ correlations <- abt %>%
 correlations %>% 
   as_tibble(rownames = "feature1") %>% 
   pivot_longer(-feature1, names_to = "feature2", values_to = "correlation") %>% 
-  filter(abs(correlation) >= 0.7) %>% 
+  filter(abs(correlation) >= 0.4) %>% 
   filter(feature1 < feature2) %>% 
   arrange(-abs(correlation)) %>% 
   mutate(correlation = sprintf("$%.03f$", correlation)) %>% 
@@ -331,7 +322,7 @@ We model the increase in COVID-19 infections using a negative-binomial regressio
 
 
 ```{r model_random_slopes, include=F}
-# plan(multiprocess)
+plan(multiprocess)
 
 model <- cache_operation(here("data/final/model.rds"), {
   run_model_vfold(
@@ -348,9 +339,11 @@ model <- cache_operation(here("data/final/model.rds"), {
        (1 + time_sc | state_code/county_fip),
      data = abt, 
     seed = RANDOM_SEED, 
-    folds = 7L
+    folds = 10L
   )
 })
+
+plan(sequential)
 ```
 
 We validated our approach during development using five-fold group cross validation, with all data for a given county assigned to the same fold. For the final model fits presented here, we apply 7-fold group cross validation to the entire data set. At each step in the development we monitored key model metrics including AIC and $R^2$ to ensure that adding new predictors did not significantly harm out-of-sample predictions. We see, for example, that the inclusion of multilevel pooling harms out-of-sample $R^2$ slightly, but it strongly reduces AIC.
