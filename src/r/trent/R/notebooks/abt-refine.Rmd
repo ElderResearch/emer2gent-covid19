@@ -139,15 +139,6 @@ group_by(d, state, county) %>%
   mutate(percent = scales::percent(count/sum(count)))
 ```
 
-NB: We have a county with a death but no cases:
-
-```{r}
-d %>% 
-  group_by(state, county) %>% 
-  summarize(across(c(confirmed, deaths), max), .groups = "drop") %>% 
-  filter(confirmed == 0, deaths > 0)
-```
-
 ---
 
 # Processing
@@ -157,6 +148,7 @@ d %>%
 ```{r}
 dd <- d %>% 
   group_by(state, county) %>% 
+  arrange(state, county, date) %>% 
   mutate(across(c(confirmed, deaths), ~ correct_negative_it(.x))) %>%
   ungroup()
 ```
@@ -320,6 +312,8 @@ dd %>%
 
 So impute zeros until the first count. 
 Then, backsmooth in the same way as other cumulative counts.
+Note, though, that the dates for total and positive tests don't line up,
+so we can't reliably compute the _weekly_ percent infection.
 
 ```{r}
 dd <- dd %>% 
@@ -338,28 +332,29 @@ dd <- dd %>%
   group_by(state, county) %>% 
   arrange(state, county, date) %>% 
   mutate(
+    cov_tests_pos_frac = cov_pos_tests / (cov_total_tests + 1e-7),
     cov_tests_tot_week = cov_total_tests - lag(cov_total_tests, n = 7),
-    cov_tests_pos_week = (
-      (cov_pos_tests - lag(cov_pos_tests, n = 7)) / 
-        (cov_tests_tot_week + 1e-7)
-    ),
+    cov_tests_pos_frac_week = cov_tests_pos_frac - lag(cov_tests_pos_frac, n = 7)
   ) %>% 
   ungroup()
 
-max(dd$cov_tests_tot_week, na.rm=T)
-max(dd$cov_tests_pos_week, na.rm = T)
+stopifnot(min(dd$cov_tests_pos_frac, na.rm = T) >= 0)
+stopifnot(max(dd$cov_tests_pos_frac, na.rm = T) <= 1)
 
+stopifnot(min(dd$cov_tests_tot_week, na.rm = T) >= 0)
+stopifnot(min(dd$cov_tests_pos_week, na.rm = T) >= 0)
 
-stopifnot(all(!is.na(dd$cov_pos_tests)))
-stopifnot(all(!is.na(dd$cov_total_tests)))
-
-
-
+stopifnot(min(dd$cov_tests_pos_frac_week, na.rm = T) >= -1)
+stopifnot(max(dd$cov_tests_pos_frac_week, na.rm = T) <= 1)
 ```
 
 ```{r}
-%>%
-  filter(!is.na(confirmed_cum_lag_7)) # removes first 7 obs for each county
+# Remove the NAs induced by our choice of target
+dd <- dd %>% filter(!is.na(confirmed_cum_lag_7))
+
+stopifnot(all(!is.na(dd$target)))
+stopifnot(all(!is.na(dd$cov_tests_tot_week)))
+stopifnot(all(!is.na(dd$cov_tests_pos_frac_week)))
 ```
 
 ### What Does our Target Capture? 
