@@ -1,7 +1,7 @@
 ---
-title:  "Emergent Analysis, Phased Reopening"
+title:  "Emergent Analysis, Phased Reopening, V2 Model"
 author: "Elder Research, Inc."
-date:   "15 June, 2020"
+date:   "Last Run: `r Sys.Date()`"
 output: 
   pdf_document:
     template: template.tex
@@ -53,6 +53,8 @@ FORCE_MODEL_RUN <- FALSE
 source(here("R/helpers.R"))
 ```
 
+**NB: This report text has not been updated to reflect new results.**
+
 <!--- --->
 
 # Executive Summary
@@ -100,8 +102,6 @@ ftrs <- tibble::tribble(
   "`policy`",            "Treatment",   "Governmental policy (none, stay-at-home, phase 1--3)",
   "`time`",              "Covariate",   "Days since first reported infection" ,
   "`time_phase`",        "Covariate",   "Days since current policy was enacted" ,
-  "`temp`",              "Covariate",   "Mean temperature" ,
-  "`humid`",             "Covariate",   "Mean relative humidity" ,
   "`density`",           "Covariate",   "County population density" ,
   "`pop`",               "Covariate",   "County total population" ,
   "`minority`",          "Covariate",   "County fraction of minority inhabitants" ,
@@ -139,9 +139,6 @@ abt <- abt %>%
     # time
     time = time_days_since_inf1, 
     time_phase,
-    # weather
-    # temp = tmpf_mean, 
-    # humid = relh_mean, 
     # demography
     density = pop_density, 
     pop = acs_pop_total,
@@ -329,7 +326,7 @@ We model the increase in COVID-19 infections using a negative-binomial regressio
 
 
 ```{r model_random_slopes, include=F}
-plan(multiprocess)
+# plan(multiprocess)
 
 model <- cache_operation(here("data/final/model.rds"), {
   run_model_vfold(
@@ -340,7 +337,6 @@ model <- cache_operation(here("data/final/model.rds"), {
        female_sc + 
        income_sc + 
        age_le_24_sc + age_25_54_sc + age_85_ge_sc + 
-       # humid_sc + temp_sc + 
        tests_total_sc + tests_pos_sc + 
        policy + policy:time_phase_sc + 
        (1 + time_sc | state_code/county_fip),
@@ -349,6 +345,8 @@ model <- cache_operation(here("data/final/model.rds"), {
     folds = 10L
   )
 })
+
+# plan(sequential)
 ```
 
 We validated our approach during development using five-fold group cross validation, with all data for a given county assigned to the same fold. For the final model fits presented here, we apply 7-fold group cross validation to the entire data set. At each step in the development we monitored key model metrics including AIC and $R^2$ to ensure that adding new predictors did not significantly harm out-of-sample predictions. We see, for example, that the inclusion of multilevel pooling harms out-of-sample $R^2$ slightly, but it strongly reduces AIC.
@@ -428,7 +426,6 @@ The fixed effects included in our model are also stable across folds, as shown b
 
 ```{r, echo=F, fig.height = 5, fig.width = 5.5}
 model_fe_plot + 
-  scale_color_brewer(guide = F, palette = "Dark2") + 
   theme(legend.position = "none", aspect.ratio = 5 / 3, text = element_text(size = 8))
 ```
 
@@ -491,7 +488,7 @@ We see from the above coefficient tables that policy effects contribute over tim
 
 ```{r, echo=F, fig.width=6}
 model_int2_plot + theme(text = element_text(size = 8))
-```
+````
 
 The nonlinear transformations applied to the time-related variables further complicate real understanding of these results from tables, so we demonstrate the effect below by sampling from the fitted model coefficients for the intercept, policy, and time since a policy was enacted, holding other predictors at their average values (i.e., zero):
 
