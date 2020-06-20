@@ -1,5 +1,5 @@
 ---
-title:  "Emergent Analysis, Phased Reopening"
+title:  "Emergent Analysis, Phased Reopening, V1 Model"
 author: "Elder Research, Inc."
 date:   "Last Run: `r Sys.Date()`"
 output: 
@@ -52,6 +52,8 @@ FORCE_MODEL_RUN <- FALSE
 
 source(here("R/helpers.R"))
 ```
+
+**NB: This report text has not been updated to reflect new results.**
 
 <!--- --->
 
