@@ -1,10 +1,12 @@
 ---
 title:  "Emergent Analysis, Phased Reopening"
 author: "Elder Research, Inc."
-date:   "15 June, 2020"
+date:   "Last Run: `r Sys.Date()`"
 output: 
   pdf_document:
     template: template.tex
+editor_options: 
+  chunk_output_type: console
 ---
 
 ```{r setup, include=FALSE}
@@ -331,7 +333,7 @@ We model the increase in COVID-19 infections using a negative-binomial regressio
 
 
 ```{r model_random_slopes, include=F}
-plan(multiprocess)
+# plan(multiprocess)
 
 model <- cache_operation(here("data/final/model.rds"), {
   run_model_vfold(
@@ -352,7 +354,7 @@ model <- cache_operation(here("data/final/model.rds"), {
   )
 })
 
-plan(sequential)
+# plan(sequential)
 ```
 
 We validated our approach during development using five-fold group cross validation, with all data for a given county assigned to the same fold. For the final model fits presented here, we apply 7-fold group cross validation to the entire data set. At each step in the development we monitored key model metrics including AIC and $R^2$ to ensure that adding new predictors did not significantly harm out-of-sample predictions. We see, for example, that the inclusion of multilevel pooling harms out-of-sample $R^2$ slightly, but it strongly reduces AIC.
@@ -432,7 +434,6 @@ The fixed effects included in our model are also stable across folds, as shown b
 
 ```{r, echo=F, fig.height = 5, fig.width = 5.5}
 model_fe_plot + 
-  scale_color_brewer(guide = F, palette = "Dark2") + 
   theme(legend.position = "none", aspect.ratio = 5 / 3, text = element_text(size = 8))
 ```
 
