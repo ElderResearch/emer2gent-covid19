@@ -98,8 +98,6 @@ ftrs <- tibble::tribble(
   "`policy`",            "Treatment",   "Governmental policy (none, stay-at-home, phase 1--3)",
   "`time`",              "Covariate",   "Days since first reported infection" ,
   "`time_phase`",        "Covariate",   "Days since current policy was enacted" ,
-  "`temp`",              "Covariate",   "Mean temperature" ,
-  "`humid`",             "Covariate",   "Mean relative humidity" ,
   "`density`",           "Covariate",   "County population density" ,
   "`pop`",               "Covariate",   "County total population" ,
   "`minority`",          "Covariate",   "County fraction of minority inhabitants" ,
@@ -137,9 +135,6 @@ abt <- abt %>%
     # time
     time = time_days_since_inf1, 
     time_phase,
-    # weather
-    temp = tmpf_mean, 
-    humid = relh_mean, 
     # demography
     density = pop_density, 
     pop = acs_pop_total,
@@ -331,7 +326,7 @@ We model the increase in COVID-19 infections using a negative-binomial regressio
 
 
 ```{r model_random_slopes, include=F}
-# plan(multiprocess)
+plan(multiprocess)
 
 model <- cache_operation(here("data/final/model.rds"), {
   run_model_vfold(
@@ -342,15 +337,16 @@ model <- cache_operation(here("data/final/model.rds"), {
        female_sc + 
        income_sc + 
        age_le_24_sc + age_25_54_sc + age_85_ge_sc + 
-       humid_sc + temp_sc + 
        tests_total_sc + tests_pos_sc + 
        policy + policy:time_phase_sc + 
        (1 + time_sc | state_code/county_fip),
      data = abt, 
     seed = RANDOM_SEED, 
-    folds = 7L
+    folds = 10L
   )
 })
+
+plan(sequential)
 ```
 
 We validated our approach during development using five-fold group cross validation, with all data for a given county assigned to the same fold. For the final model fits presented here, we apply 7-fold group cross validation to the entire data set. At each step in the development we monitored key model metrics including AIC and $R^2$ to ensure that adding new predictors did not significantly harm out-of-sample predictions. We see, for example, that the inclusion of multilevel pooling harms out-of-sample $R^2$ slightly, but it strongly reduces AIC.
