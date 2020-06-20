@@ -243,7 +243,7 @@ plot_w_policy <- function(df, y = NULL) {
 
 ---
 
-## Infections
+## Infections and Testing
 
 Count the number of _new_ infections over a seven-day period (`target`) in
 addition to:  
@@ -270,6 +270,7 @@ addition to:
 ```{r warning=F}
 dd <- dd %>%
   group_by(state, county) %>%
+  arrange(state, county, date) %>%
   mutate(
     confirmed_cum = confirmed,
     confirmed_cum_lag_7 = lag(confirmed_cum, 7),
@@ -289,7 +290,75 @@ dd <- dd %>%
     unemployment_pct_delta = lag_unemp_ratio/lead_unemp_ratio, 
     unemployment_penetration = unemployed/labor_force, 
     unemployment_momentum = lag_unemployment/unemployed) %>%
-  ungroup() %>%
+  ungroup()
+```
+
+
+### Testing
+
+Testing data is complete once it begins:
+
+```{r}
+cov_cols <- c(
+  "cov_pos_tests",
+  "cov_total_tests"
+)
+
+# Should be zero
+dd %>% 
+  select(state, county, county_fip, date, one_of(cov_cols)) %>% 
+  pivot_longer(all_of(cov_cols)) %>% 
+  group_by(state, county, county_fip, name) %>% 
+  summarize(
+    max_na = suppressWarnings(max(date[is.na(value)])),
+    min_not_na = suppressWarnings(min(date[!is.na(value)])),
+    .groups = "drop"
+  ) %>% 
+  filter(min_not_na < max_na) %>% 
+  summarize(nrow = nrow(.))
+```
+
+So impute zeros until the first count. 
+Then, backsmooth in the same way as other cumulative counts.
+
+```{r}
+dd <- dd %>% 
+  group_by(state, county) %>% 
+  arrange(state, county, date) %>% 
+  # Only keep the columns we've checked
+  select(-starts_with("cov_"), all_of(cov_cols)) %>% 
+  mutate(across(all_of(cov_cols), replace_na, 0L)) %>% 
+  mutate(across(all_of(cov_cols), correct_negative_it))
+
+stopifnot(all(dd$cov_pos_tests >= 0))
+stopifnot(all(dd$cov_total_tests >= 0))
+
+# Also compute week-over-week changes like the target
+dd <- dd %>% 
+  group_by(state, county) %>% 
+  arrange(state, county, date) %>% 
+  mutate(
+    cov_tests_tot_week = cov_total_tests - lag(cov_total_tests, n = 7),
+    cov_tests_pos_week = (
+      (cov_pos_tests - lag(cov_pos_tests, n = 7)) / 
+        (cov_tests_tot_week + 1e-7)
+    ),
+  ) %>% 
+  ungroup()
+
+max(dd$cov_tests_tot_week, na.rm=T)
+max(dd$cov_tests_pos_week, na.rm = T)
+
+
+stopifnot(all(!is.na(dd$cov_pos_tests)))
+stopifnot(all(!is.na(dd$cov_total_tests)))
+
+
+
+```
+
+```{r}
+%>%
   filter(!is.na(confirmed_cum_lag_7)) # removes first 7 obs for each county
 ```
 
@@ -683,44 +752,6 @@ stopifnot(sum(is.na(dd$unemployed)) == 0)
 stopifnot(nrow(dd) == nrow_chk_)
 # NB: labor force can apparently be bigger than 1 in the _original_ data
 stopifnot(all(dd$unemployed <= 1))
-```
-
----
-
-## Testing
-
-Testing data is complete once it begins:
-
-```{r}
-cov_cols <- c(
-  "cov_pos_tests",
-  "cov_total_tests"
-)
-
-dd %>% 
-  select(state, county, county_fip, date, one_of(cov_cols)) %>% 
-  pivot_longer(all_of(cov_cols)) %>% 
-  group_by(state, county, county_fip, name) %>% 
-  summarize(
-    max_na = suppressWarnings(max(date[is.na(value)])),
-    min_not_na = suppressWarnings(min(date[!is.na(value)])),
-    .groups = "drop"
-  ) %>% 
-  filter(min_not_na < max_na) %>% 
-  summarize(nrow = nrow(.))
-```
-
-So impute zeros until the first count:
-
-```{r}
-dd <- dd %>% 
-  group_by(state, county) %>% 
-  # Only keep the columns we've checked
-  select(-starts_with("cov_"), all_of(cov_cols)) %>% 
-  mutate(across(all_of(cov_cols), replace_na, 0L))
-
-stopifnot(all(!is.na(dd$cov_pos_tests)))
-stopifnot(all(!is.na(dd$cov_total_tests)))
 ```
 
 ---
